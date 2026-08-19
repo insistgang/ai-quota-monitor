@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh"><head><meta charset="utf-8">
-<title>AI 额度监控 · 2026-08-19 19:36</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 额度监控 · 2026-08-19 19:44</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
 *{box-sizing:border-box}
@@ -14,7 +14,14 @@ table{border-collapse:collapse;width:100%} td{border:1px solid #30363d;padding:9
 .pill{font-size:11px;padding:2px 8px;border-radius:99px}
 .pill.ok{background:rgba(63,185,80,.15);color:#3fb950}
 .pill.bad{background:rgba(248,81,73,.15);color:#f85149}
-.pct{font-size:34px;font-weight:700;letter-spacing:-1px;margin:2px 0 8px}
+.pill.warn{background:rgba(240,136,62,.18);color:#f0883e}
+.card.urgent{border-color:#f0883e}
+.pct{font-size:34px;font-weight:700;letter-spacing:-1px;margin:2px 0 4px}
+.remain{font-size:13px;color:#8b949e;margin-bottom:8px}
+.alertband{background:rgba(240,136,62,.1);border:1px solid rgba(240,136,62,.45);border-radius:10px;padding:12px 16px;margin:12px 0 18px}
+.alertband h3{margin:0 0 8px;font-size:15px;color:#f0883e}
+.alertband ul{margin:0;padding-left:18px}
+.alertband li{font-size:14px;margin:5px 0}
 .bar{height:8px;background:#21262d;border-radius:99px;overflow:hidden}
 .bar.small{height:5px;margin-top:4px}
 .fill{height:100%;border-radius:99px;transition:width .4s}
@@ -39,57 +46,68 @@ table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap}
 .msg{font-size:13px;color:#d29922}
 </style></head><body>
 <h1>🤖 AI 额度监控</h1>
-<div class="ts">更新于 2026-08-19 19:36 · 公开快照 · 每日自动更新</div>
+<div class="ts">更新于 2026-08-19 19:44 · 公开快照 · 每日自动更新 · 卡片按周剩余从小到大</div>
 
-<div class="grid"><div class="card"><div class="top"><span class="name">Kimi · 主账号</span>
-<span class="pill ok">正常</span></div>
-<div class="pct" style="color:#3fb950">24%</div>
-<div class="bar"><div class="fill" style="width:24.0%;background:#3fb950"></div></div>
-<div class="meta">本周已用 24/100 · 重置 08-24 01:18</div>
+<div class="alertband"><h3>快刷新了，剩余额度抓紧用</h3><ul><li><b>MiniMax · Plus</b> · 5h 窗 15 分钟后刷新，还剩 71%，抓紧用</li><li><b>Kimi · 副账号</b> · 5h 窗 3 小时后刷新，还剩 100%，抓紧用</li><li><b>Codex · Win</b> · 周额度 18 小时后刷新，还剩 67%，抓紧用</li></ul></div>
+<div class="grid"><div class="card"><div class="top"><span class="name">Codex · Mac</span>
+<span class='pill ok'>正常</span></div>
+<div class="pct" style="color:#f85149">100%</div>
+<div class="remain">剩 0%</div>
+<div class="bar"><div class="fill" style="width:100.0%;background:#f85149"></div></div>
+<div class="meta">本周已用 100%（剩 0%） · 重置 08-20 11:36</div>
+<div class='meta dim'>gpt-5.6-sol max · 实时</div></div><div class="card"><div class="top"><span class="name">Grok · SuperGrok</span>
+<span class='pill ok'>正常</span></div>
+<div class="pct" style="color:#f0883e">91%</div>
+<div class="remain">剩 9%</div>
+<div class="bar"><div class="fill" style="width:91.0%;background:#f0883e"></div></div>
+<div class="meta">本周已用 91% · 重置 August 23, 13:06</div>
+</div><div class="card"><div class="top"><span class="name">Antigravity · Claude/GPT 组</span>
+<span class='pill ok'>正常</span></div>
+<div class="pct" style="color:#d29922">65.8%</div>
+<div class="remain">剩 34.2%</div>
+<div class="bar"><div class="fill" style="width:65.8%;background:#d29922"></div></div>
+<div class="meta">本周已用 65.76% · 重置 08-22 19:55</div>
 <div class="sub">5h 窗</div>
-<div class="bar small"><div class="fill" style="width:0%;background:#3fb950"></div></div>
-<div class="meta">已用 0/100 · 重置 08-20 00:18</div></div><div class="card"><div class="top"><span class="name">Kimi · 副账号</span>
-<span class="pill ok">正常</span></div>
+<div class="bar small"><div class="fill" style="width:28.5%;background:#3fb950"></div></div>
+<div class="meta">已用 28.5% · 重置 08-20 00:35</div><div class='meta dim'>Google AI Pro</div></div><div class="card urgent"><div class="top"><span class="name">Kimi · 副账号</span>
+<span class='pill warn'>抓紧用</span></div>
 <div class="pct" style="color:#3fb950">49%</div>
+<div class="remain">剩 51%</div>
 <div class="bar"><div class="fill" style="width:49.0%;background:#3fb950"></div></div>
 <div class="meta">本周已用 49/100 · 重置 08-24 15:17</div>
 <div class="sub">5h 窗</div>
 <div class="bar small"><div class="fill" style="width:0%;background:#3fb950"></div></div>
-<div class="meta">已用 0/100 · 重置 08-19 22:17</div></div><div class="card"><div class="top"><span class="name">Codex · Mac</span>
-<span class="pill ok">正常</span></div>
-<div class="pct" style="color:#f85149">100%</div>
-<div class="bar"><div class="fill" style="width:100.0%;background:#f85149"></div></div>
-<div class="meta">本周已用 100%（剩 0%） · 重置 08-20 11:36</div>
-<div class='meta dim'>gpt-5.6-sol max · 实时</div></div><div class="card"><div class="top"><span class="name">Codex · Win</span>
-<span class="pill ok">正常</span></div>
+<div class="meta">已用 0/100 · 重置 08-19 22:17</div></div><div class="card urgent"><div class="top"><span class="name">Codex · Win</span>
+<span class='pill warn'>抓紧用</span></div>
 <div class="pct" style="color:#3fb950">33%</div>
+<div class="remain">剩 67%</div>
 <div class="bar"><div class="fill" style="width:33.0%;background:#3fb950"></div></div>
 <div class="meta">本周已用 33.0% · 重置 08-20 13:38</div>
-<div class='meta dim'>plus</div></div><div class="card"><div class="top"><span class="name">Grok · SuperGrok</span>
-<span class="pill ok">正常</span></div>
-<div class="pct" style="color:#f0883e">90%</div>
-<div class="bar"><div class="fill" style="width:90.0%;background:#f0883e"></div></div>
-<div class="meta">本周已用 90% · 重置 August 23, 13:06</div>
-</div><div class="card"><div class="top"><span class="name">MiniMax · Plus</span>
-<span class="pill ok">正常</span></div>
+<div class='meta dim'>plus</div></div><div class="card"><div class="top"><span class="name">Antigravity · Gemini 组</span>
+<span class='pill ok'>正常</span></div>
+<div class="pct" style="color:#3fb950">25.3%</div>
+<div class="remain">剩 74.7%</div>
+<div class="bar"><div class="fill" style="width:25.3%;background:#3fb950"></div></div>
+<div class="meta">本周已用 25.29% · 重置 08-22 15:26</div>
+<div class="sub">5h 窗</div>
+<div class="bar small"><div class="fill" style="width:6.2%;background:#3fb950"></div></div>
+<div class="meta">已用 6.22% · 重置 08-20 00:15</div><div class='meta dim'>Google AI Pro</div></div><div class="card"><div class="top"><span class="name">Kimi · 主账号</span>
+<span class='pill ok'>正常</span></div>
+<div class="pct" style="color:#3fb950">24%</div>
+<div class="remain">剩 76%</div>
+<div class="bar"><div class="fill" style="width:24.0%;background:#3fb950"></div></div>
+<div class="meta">本周已用 24/100 · 重置 08-24 01:18</div>
+<div class="sub">5h 窗</div>
+<div class="bar small"><div class="fill" style="width:0%;background:#3fb950"></div></div>
+<div class="meta">已用 0/100 · 重置 08-20 00:18</div></div><div class="card urgent"><div class="top"><span class="name">MiniMax · Plus</span>
+<span class='pill warn'>抓紧用</span></div>
 <div class="pct" style="color:#3fb950">0%</div>
+<div class="remain">剩 100%</div>
 <div class="bar"><div class="fill" style="width:0%;background:#3fb950"></div></div>
 <div class="meta">本周已用 0% · 重置 08-24 00:00</div>
 <div class="sub">5h 窗</div>
 <div class="bar small"><div class="fill" style="width:29.0%;background:#3fb950"></div></div>
-<div class="meta">已用 29% · 重置 08-19 20:00</div></div><div class="card"><div class="top"><span class="name">Antigravity · Gemini 组</span>
-<span class="pill ok">正常</span></div>
-<div class="pct" style="color:#3fb950">25.3%</div>
-<div class="bar"><div class="fill" style="width:25.3%;background:#3fb950"></div></div>
-<div class="meta">本周已用 25.29% · 重置 08-22 15:27</div>
-<div class="sub">5h 窗</div>
-<div class="bar small"><div class="fill" style="width:6.2%;background:#3fb950"></div></div>
-<div class="meta">已用 6.22% · 重置 08-20 00:16</div><div class='meta dim'>Google AI Pro</div></div><div class="card"><div class="top"><span class="name">Antigravity · Claude/GPT 组</span>
-<span class="pill ok">正常</span></div>
-<div class="pct" style="color:#d29922">56.3%</div>
-<div class="bar"><div class="fill" style="width:56.3%;background:#d29922"></div></div>
-<div class="meta">本周已用 56.26% · 重置 08-22 19:56</div>
-<div class='meta dim'>Google AI Pro</div></div></div>
+<div class="meta">已用 29% · 重置 08-19 20:00</div></div></div>
 <h2>💳 订阅 · 到期 · 续费</h2>
 <div class='totalband'>💰 本人 AI 固定支出约 270 元/月 · 含非 AI 合计约 310 元/月</div>
 <div class="sgrid"><div class="scard">
