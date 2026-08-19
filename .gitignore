@@ -1,0 +1,6 @@
+quota-log.csv
+quota-dashboard.html
+launchd.stdout.log
+launchd.stderr.log
+__pycache__/
+.DS_Store
