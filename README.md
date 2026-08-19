@@ -2,6 +2,8 @@
 
 一条命令，把这台 Mac 上所有 AI 编程工具的**本周已用额度**汇总成一张表，附带一个本地卡片式仪表盘。
 
+**📊 线上快照（每日自动更新）**：https://insistgang.top/ai-quota-monitor/
+
 ## 支持的数据源
 
 | 源 | 取数方式 |
@@ -20,6 +22,8 @@ python3 quota_report.py            # 终端表格
 python3 quota_report.py --json     # 机器可读输出
 python3 quota_report.py --log      # 追加快照到 quota-log.csv（攒每日底账）
 python3 quota_report.py --html     # 生成 quota-dashboard.html 仪表盘
+python3 quota_report.py --serve    # 本地服务模式：http://127.0.0.1:8788 页面上可点按钮实时刷新
+./publish.sh                       # 采集 + 生成公开版页面 + 推送 GitHub Pages（每日定时任务跑的就是它）
 ```
 
 仪表盘长这样：每张卡 = 一个模型，大号百分比 + 进度条，按用量变色（🟢<50% / 🟡50-80% / 🟠80-95% / 🔴>95%），Kimi/Antigravity 附 5 小时窗子条。
