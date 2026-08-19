@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.leo.quota-report</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>/Users/YOURNAME/ai-quota-monitor/quota_report.py</string>
+    <string>--log</string>
+    <string>--html</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>12</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/YOURNAME/.grok/bin:/Users/YOURNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>TERM</key>
+    <string>xterm-256color</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOURNAME/ai-quota-monitor/launchd.stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/YOURNAME/ai-quota-monitor/launchd.stderr.log</string>
+</dict>
+</plist>
