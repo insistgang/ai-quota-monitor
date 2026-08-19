@@ -799,6 +799,80 @@ PUBLIC_LABELS = {
     "Kimi · Andy（199/月）": "Kimi · 副账号",
 }
 
+_HIST_PUBLIC = {"Kimi · 本人": "Kimi · 主账号", "Kimi · Andy": "Kimi · 副账号"}
+
+
+def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
+    """从 LOG_CSV 计算每源每日消耗（周计数口径）。
+
+    日消耗 = 当天末次快照 − 前一日末次快照；底账首日无前值，从当天首次快照起算
+    （partial 标记）。负值视为周重置。返回 [(日期, [行...]), ...]，新日期在前。
+    """
+    if not LOG_CSV.exists():
+        return []
+    per: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    with open(LOG_CSV, encoding="utf-8") as f:
+        for r in csv.reader(f):
+            if len(r) < 4 or not r[0] or not r[0][0].isdigit():
+                continue
+            try:
+                pct = float(r[3])
+            except ValueError:
+                continue
+            name = r[1].split("（")[0].strip()  # 合并标签改名（如 Kimi 本人 99/月→948/年）
+            per.setdefault((r[0][:10], name), []).append((r[0], pct))
+    dates = sorted({d for d, _ in per}, reverse=True)[:days]
+    out = []
+    for d in dates:
+        rows = []
+        for (dd, name), snaps in sorted(per.items()):
+            if dd != d:
+                continue
+            snaps.sort()
+            prev_days = [p for (p, n2) in per if n2 == name and p < d]
+            if prev_days:
+                prev = sorted(per[(max(prev_days), name)])[-1][1]
+                delta, partial = snaps[-1][1] - prev, False
+            elif len(snaps) >= 2:
+                delta, partial = snaps[-1][1] - snaps[0][1], True
+            else:
+                continue
+            rows.append({"name": name, "delta": round(delta, 1),
+                         "reset": delta < -0.05, "partial": partial})
+        out.append((d, rows))
+    return out
+
+
+def _history_html(public: bool) -> str:
+    """每日消耗柱状图：按天分块，源按消耗降序，纯 CSS 横条。"""
+    days = _daily_deltas()
+    if not days:
+        return ""
+    blocks = []
+    for d, rows in days:
+        shown = [r for r in rows if not r["reset"] and r["delta"] > 0.05]
+        resets = [r for r in rows if r["reset"]]
+        lines = []
+        if shown:
+            mx = max(r["delta"] for r in shown)
+            for r in sorted(shown, key=lambda x: -x["delta"]):
+                name = _HIST_PUBLIC.get(r["name"], r["name"]) if public else r["name"]
+                w = max(3, round(r["delta"] / mx * 100))
+                tag = "*" if r["partial"] else ""
+                lines.append(
+                    f'<div class="hrow"><span class="hname">{name}</span>'
+                    f'<div class="hbar"><div class="hfill" style="width:{w}%"></div></div>'
+                    f'<span class="hval">+{r["delta"]:g}%{tag}</span></div>')
+        else:
+            lines.append('<div class="hrow dim">当日未记录到消耗</div>')
+        for r in resets:
+            name = _HIST_PUBLIC.get(r["name"], r["name"]) if public else r["name"]
+            lines.append(f'<div class="hrow dim">{name} ↺ 周重置</div>')
+        blocks.append(f'<div class="hday"><div class="hdate">{d[5:]}</div>{"".join(lines)}</div>')
+    return ('<h2>📊 每日消耗（周计数口径）</h2>' + "".join(blocks)
+            + '<div class="sub">日消耗 = 当天末次快照 − 前一日末次快照；* 底账首日从当天首次快照起算；'
+              '5h 窗与周重置日不计；底账自 08-19 起，随快照积累逐日丰富</div>')
+
 
 def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
                 public: bool = False) -> str:
@@ -871,12 +945,21 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap}}
 .meta.dim{{color:#8b949e}}
 .sub{{font-size:11px;color:#8b949e;margin-top:12px}}
 .msg{{font-size:13px;color:#d29922}}
+.hday{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px 16px;margin-bottom:10px}}
+.hdate{{font-size:13px;font-weight:600;color:#8b949e;margin-bottom:8px}}
+.hrow{{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:13px}}
+.hrow.dim{{color:#8b949e}}
+.hname{{width:170px;flex-shrink:0}}
+.hbar{{flex:1;height:10px;background:#21262d;border-radius:99px;overflow:hidden}}
+.hfill{{height:100%;background:#58a6ff;border-radius:99px}}
+.hval{{width:74px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0}}
 </style></head><body>
 <h1>🤖 AI 额度监控</h1>
 <div class="ts">更新于 {now} · {"公开快照 · 每日自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · 卡片按周剩余从小到大</div>
 {live_ui}
 <div class="grid">{cards}</div>
 {banner}
+{_history_html(public)}
 {_subs_html(public)}
 </body></html>"""
     if path is not None:
