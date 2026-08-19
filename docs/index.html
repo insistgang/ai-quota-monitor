@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh"><head><meta charset="utf-8">
-<title>AI 额度监控 · 2026-08-19 13:32</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 额度监控 · 2026-08-19 13:36</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
 *{box-sizing:border-box}
@@ -20,12 +20,26 @@ table{border-collapse:collapse;width:100%} td{border:1px solid #30363d;padding:9
 .fill{height:100%;border-radius:99px;transition:width .4s}
 .meta{font-size:13px;color:#c9d1d9;margin-top:8px}
 .meta.nonai{padding:6px 0;border-bottom:1px dashed #21262d}
+.card:hover,.scard:hover{border-color:#58a6ff}
+.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+.scard{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px 16px;transition:border-color .2s}
+.scard.mini{padding:10px 14px}
+.sname{font-size:14px;font-weight:600;margin-bottom:6px}
+.scost{font-size:19px;font-weight:700;color:#58a6ff;margin-bottom:6px}
+.smeta{font-size:13px;color:#8b949e}
+.cd{font-size:11px;padding:2px 8px;border-radius:99px;margin-left:6px;white-space:nowrap}
+.cd.green{background:rgba(63,185,80,.15);color:#3fb950}
+.cd.yellow{background:rgba(210,153,34,.15);color:#d29922}
+.cd.red{background:rgba(248,81,73,.15);color:#f85149}
+.totalband{background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);border-radius:10px;padding:10px 16px;font-size:15px;font-weight:600;margin-bottom:14px}
+table.ledger td{font-size:14px;padding:7px 12px}
+table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap}
 .meta.dim{color:#8b949e}
 .sub{font-size:11px;color:#8b949e;margin-top:12px}
 .msg{font-size:13px;color:#d29922}
 </style></head><body>
 <h1>🤖 AI 额度监控</h1>
-<div class="ts">更新于 2026-08-19 13:32 · 公开快照 · 每日自动更新</div>
+<div class="ts">更新于 2026-08-19 13:36 · 公开快照 · 每日自动更新</div>
 
 <div class="grid"><div class="card"><div class="top"><span class="name">Kimi · 主账号</span>
 <span class="pill ok">正常</span></div>
@@ -40,8 +54,8 @@ table{border-collapse:collapse;width:100%} td{border:1px solid #30363d;padding:9
 <div class="bar"><div class="fill" style="width:45.0%;background:#3fb950"></div></div>
 <div class="meta">本周已用 45/100 · 重置 08-24 15:17</div>
 <div class="sub">5h 窗</div>
-<div class="bar small"><div class="fill" style="width:46.0%;background:#3fb950"></div></div>
-<div class="meta">已用 46/100 · 重置 08-19 17:17</div></div><div class="card"><div class="top"><span class="name">Codex · Mac</span>
+<div class="bar small"><div class="fill" style="width:48.0%;background:#3fb950"></div></div>
+<div class="meta">已用 48/100 · 重置 08-19 17:17</div></div><div class="card"><div class="top"><span class="name">Codex · Mac</span>
 <span class="pill ok">正常</span></div>
 <div class="pct" style="color:#f85149">100%</div>
 <div class="bar"><div class="fill" style="width:100.0%;background:#f85149"></div></div>
@@ -65,22 +79,60 @@ table{border-collapse:collapse;width:100%} td{border:1px solid #30363d;padding:9
 <div class="bar small"><div class="fill" style="width:9.0%;background:#3fb950"></div></div>
 <div class="meta">已用 9% · 重置 08-19 15:00</div></div><div class="card"><div class="top"><span class="name">Antigravity · Gemini 组</span>
 <span class="pill ok">正常</span></div>
-<div class="pct" style="color:#3fb950">20.3%</div>
-<div class="bar"><div class="fill" style="width:20.3%;background:#3fb950"></div></div>
-<div class="meta">本周已用 20.31% · 重置 08-22 15:26</div>
+<div class="pct" style="color:#3fb950">20.4%</div>
+<div class="bar"><div class="fill" style="width:20.4%;background:#3fb950"></div></div>
+<div class="meta">本周已用 20.37% · 重置 08-22 15:26</div>
 <div class="sub">5h 窗</div>
-<div class="bar small"><div class="fill" style="width:31.3%;background:#3fb950"></div></div>
-<div class="meta">已用 31.31% · 重置 08-19 14:16</div><div class='meta dim'>Google AI Pro</div></div><div class="card"><div class="top"><span class="name">Antigravity · Claude/GPT 组</span>
+<div class="bar small"><div class="fill" style="width:31.7%;background:#3fb950"></div></div>
+<div class="meta">已用 31.69% · 重置 08-19 14:16</div><div class='meta dim'>Google AI Pro</div></div><div class="card"><div class="top"><span class="name">Antigravity · Claude/GPT 组</span>
 <span class="pill ok">正常</span></div>
 <div class="pct" style="color:#d29922">56.3%</div>
 <div class="bar"><div class="fill" style="width:56.3%;background:#d29922"></div></div>
-<div class="meta">本周已用 56.26% · 重置 08-22 19:55</div>
+<div class="meta">本周已用 56.26% · 重置 08-22 19:56</div>
 <div class="sub">5h 窗</div>
 <div class="bar small"><div class="fill" style="width:2.6%;background:#3fb950"></div></div>
-<div class="meta">已用 2.59% · 重置 08-19 15:30</div><div class='meta dim'>Google AI Pro</div></div></div>
+<div class="meta">已用 2.59% · 重置 08-19 15:31</div><div class='meta dim'>Google AI Pro</div></div></div>
 <h2>💳 订阅 · 到期 · 续费</h2>
-<table><tr><td>服务</td><td>费用</td><td>到期 / 续费</td></tr><tr><td>🤖 ChatGPT ×2 账号（Codex）</td><td>合计 150 元/月（1800 元/年）</td><td>每月 3/22 日</td></tr><tr><td>🌙 Kimi（本人账号）</td><td>948 元/年</td><td>每月 2 日；2027-02-02 到期</td></tr><tr><td>🌙 Kimi（朋友 账号）</td><td>朋友 付费，不计入本人支出</td><td>每月 17 日</td></tr><tr><td>🚀 Grok</td><td>朋友 付费，不计入本人支出</td><td>2026-11-02 到期</td></tr><tr><td>♊ Gemini（Antigravity 账号）</td><td>0 元</td><td>2027-01-25 到期</td></tr><tr><td>🎬 MiniMax</td><td>490 元/年</td><td>2027-03-22 到期</td></tr><tr><td>🧠 智谱 ChatGLM</td><td>0 元</td><td>2027-05-25 到期</td></tr><tr><td>🔀 中转平台（第三方）</td><td>8 月初充 100 元，现余额 832 刀</td><td>余额耗尽为止</td></tr><tr><td>🔍 DeepSeek</td><td>充 10 元，现余额 9.7 元</td><td>消耗极低</td></tr></table><div class='meta' style='margin-top:10px;color:#e6edf3'>💰 本人 AI 固定支出约 270 元/月 · 含非 AI 合计约 310 元/月</div>
+<div class='totalband'>💰 本人 AI 固定支出约 270 元/月 · 含非 AI 合计约 310 元/月</div>
+<div class="sgrid"><div class="scard">
+<div class="sname">🤖 ChatGPT ×2 账号（Codex）</div>
+<div class="scost">合计 150 元/月（1800 元/年）</div>
+<div class="smeta">每月 3/22 日 </div>
+</div><div class="scard">
+<div class="sname">🌙 Kimi（本人账号）</div>
+<div class="scost">948 元/年</div>
+<div class="smeta">每月 2 日；2027-02-02 到期 <span class='cd green'>剩 167 天</span></div>
+</div><div class="scard">
+<div class="sname">🌙 Kimi（朋友 账号）</div>
+<div class="scost">朋友 付费，不计入本人支出</div>
+<div class="smeta">每月 17 日 </div>
+</div><div class="scard">
+<div class="sname">🚀 Grok</div>
+<div class="scost">朋友 付费，不计入本人支出</div>
+<div class="smeta">2026-11-02 到期 <span class='cd green'>剩 75 天</span></div>
+</div><div class="scard">
+<div class="sname">♊ Gemini（Antigravity 账号）</div>
+<div class="scost">0 元</div>
+<div class="smeta">2027-01-25 到期 <span class='cd green'>剩 159 天</span></div>
+</div><div class="scard">
+<div class="sname">🎬 MiniMax</div>
+<div class="scost">490 元/年</div>
+<div class="smeta">2027-03-22 到期 <span class='cd green'>剩 215 天</span></div>
+</div><div class="scard">
+<div class="sname">🧠 智谱 ChatGLM</div>
+<div class="scost">0 元</div>
+<div class="smeta">2027-05-25 到期 <span class='cd green'>剩 279 天</span></div>
+</div><div class="scard">
+<div class="sname">🔀 中转平台（第三方）</div>
+<div class="scost">8 月初充 100 元，现余额 832 刀</div>
+<div class="smeta">余额耗尽为止 </div>
+</div><div class="scard">
+<div class="sname">🔍 DeepSeek</div>
+<div class="scost">充 10 元，现余额 9.7 元</div>
+<div class="smeta">消耗极低 </div>
+</div></div>
 <h2>📒 消费台账（历史充值）</h2>
-<table><tr><td>日期</td><td>项目</td><td>金额</td></tr><tr><td>2026-01-23</td><td>📦 Codex 日卡（闲鱼，3 元/日 10 刀 token）</td><td>3 元</td></tr><tr><td>2026-02-02</td><td>🌙 Kimi Agent</td><td>⏳</td></tr><tr><td>2026-02-12</td><td>🎭 Claude 充值</td><td>150 元</td></tr><tr><td>2026-02-12</td><td>🔀 中转平台额度（1000 刀）</td><td>200 元</td></tr><tr><td>2026-02-12</td><td>📦 微信云平台</td><td>20 元</td></tr><tr><td>2026-02-12</td><td>📦 TikHub 爬虫额度</td><td>35 元</td></tr><tr><td>2026-02-12</td><td>🌙 Kimi2.5 / Claude Pro / Kimi Pro / GLM Pro / MiniMax2.5 转接口</td><td>⏳</td></tr><tr><td>2026-03-27</td><td>🤖 ChatGPT 充值+中转</td><td>⏳</td></tr><tr><td>2026-07-04</td><td>🎭 Claude Max20</td><td>⏳</td></tr></table>
-<h2>🧾 非 AI 固定订阅</h2><div class='meta nonai'>☁️ iCloud：21 元/月（252 元/年）</div><div class='meta nonai'>🎧 得到大脑会员：199 元/年 × 买 2 年送 1 年 + 活动再送 1 年，实付 398 元用 4 年（≈8.3 元/月），2029-05-03 到期</div><div class='meta nonai'>📚 微信读书：125 元/372 天（≈10.2 元/月），2027-08-02 到期</div><div class='meta nonai'>💾 百度网盘：会员 2026-10-25 到期，到期前评估是否续（当前仍在用，Codex 可直接读取网盘文件）</div><div class='meta nonai'>📺 视频会员：0 元——妈妈手机卡会员活动已整好（2026-08-19 本人确认），白嫖一年</div>
+<table class="ledger"><tr><td>日期</td><td>项目</td><td>金额</td></tr><tr><td>2026-01-23</td><td>📦 Codex 日卡（闲鱼，3 元/日 10 刀 token）</td><td class='amt'>3 元</td></tr><tr><td>2026-02-02</td><td>🌙 Kimi Agent</td><td class='amt'>⏳</td></tr><tr><td>2026-02-12</td><td>🎭 Claude 充值</td><td class='amt'>150 元</td></tr><tr><td>2026-02-12</td><td>🔀 中转平台额度（1000 刀）</td><td class='amt'>200 元</td></tr><tr><td>2026-02-12</td><td>📦 微信云平台</td><td class='amt'>20 元</td></tr><tr><td>2026-02-12</td><td>📦 TikHub 爬虫额度</td><td class='amt'>35 元</td></tr><tr><td>2026-02-12</td><td>🌙 Kimi2.5 / Claude Pro / Kimi Pro / GLM Pro / MiniMax2.5 转接口</td><td class='amt'>⏳</td></tr><tr><td>2026-03-27</td><td>🤖 ChatGPT 充值+中转</td><td class='amt'>⏳</td></tr><tr><td>2026-07-04</td><td>🎭 Claude Max20</td><td class='amt'>⏳</td></tr></table>
+<h2>🧾 非 AI 固定订阅</h2>
+<div class="sgrid"><div class='scard mini'><div class='sname'>☁️ iCloud：21 元/月（252 元/年）</div></div><div class='scard mini'><div class='sname'>🎧 得到大脑会员：199 元/年 × 买 2 年送 1 年 + 活动再送 1 年，实付 398 元用 4 年（≈8.3 元/月），2029-05-03 到期</div></div><div class='scard mini'><div class='sname'>📚 微信读书：125 元/372 天（≈10.2 元/月），2027-08-02 到期</div></div><div class='scard mini'><div class='sname'>💾 百度网盘：会员 2026-10-25 到期，到期前评估是否续（当前仍在用，Codex 可直接读取网盘文件）</div></div><div class='scard mini'><div class='sname'>📺 视频会员：0 元——妈妈手机卡会员活动已整好（2026-08-19 本人确认），白嫖一年</div></div></div>
 </body></html>
