@@ -21,10 +21,12 @@ import argparse
 import csv
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -221,7 +223,7 @@ def _codex_local(label: str) -> dict:
             left = float(m.group(1))
             m_model = re.search(r"› /status.*?(gpt[\w.\- ]+?) ·", text.replace("\n", " "))
             note = m_model.group(1).strip() if m_model else ""
-            # TUI 不显示重置时间；用最新会话文件的 resets_at 推算
+            # TUI 状态栏不带重置时刻；resets_at 来自 Codex 会话里的官方字段
             reset = "滚动周窗"
             try:
                 files = sorted((HOME / ".codex/sessions").rglob("rollout-*.jsonl"),
@@ -229,7 +231,7 @@ def _codex_local(label: str) -> dict:
                 for f in reversed(files[-5:]):
                     rl = _extract_rate_limits(f)
                     if rl and rl.get("primary", {}).get("resets_at"):
-                        reset = _fmt_epoch(rl["primary"]["resets_at"]) + "（推算）"
+                        reset = _fmt_epoch(rl["primary"]["resets_at"])
                         break
             except Exception:  # noqa: BLE001
                 pass
@@ -341,13 +343,21 @@ def _grok(label: str) -> dict:
         subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True)
 
 
+def _mmx_bin() -> str | None:
+    if shutil.which("mmx"):
+        return "mmx"
+    cands = sorted(Path.home().glob(".nvm/versions/node/*/bin/mmx"))
+    return str(cands[-1]) if cands else None
+
+
 def _minimax(label: str) -> dict:
     """MiniMax：本机 mmx-cli 的 `mmx quota show`（JSON 输出）。
     取 model_name=general：current_weekly_remaining_percent / current_interval_remaining_percent（5h 窗）。"""
-    if not shutil.which("mmx"):
-        return {"name": label, "status": "mmx-cli 未安装"}
+    mmx = _mmx_bin()
+    if not mmx:
+        return {"name": label, "status": "mmx-cli 未找到"}
     try:
-        out = subprocess.run(["mmx", "quota", "show"], capture_output=True, timeout=20, check=False)
+        out = subprocess.run([mmx, "quota", "show"], capture_output=True, timeout=20, check=False)
         d = json.loads(out.stdout.decode("utf-8", errors="ignore"))
         models = d.get("model_remains", [])
         g = next((m for m in models if m.get("model_name") == "general"), models[0] if models else None)
@@ -421,7 +431,7 @@ def _load_kimi_keys() -> tuple[str | None, str | None]:
 def collect() -> list[dict]:
     mine, andy = _load_kimi_keys()
     rows = [
-        _kimi_quota("Kimi · 本人（99/月）", mine),
+        _kimi_quota("Kimi · 本人（948/年）", mine),
         _kimi_quota("Kimi · Andy（199/月）", andy),
         _codex_local("Codex · Mac"),
         _codex_win("Codex · Win"),
@@ -431,23 +441,177 @@ def collect() -> list[dict]:
     return rows
 
 
+# ---------- 排序 / 刷新提醒 ----------
+
+_MONTHS = {n: i for i, n in enumerate(
+    "January February March April May June July August September "
+    "October November December".split(), 1)}
+_WEEKLY_SOON_H = 36
+_FIVEH_SOON_H = 3
+
+
+def _remain_pct(r: dict, key: str = "used_pct") -> float | None:
+    pct = r.get(key)
+    if pct is None:
+        return None
+    return max(0.0, min(100.0, 100.0 - float(pct)))
+
+
+def _parse_reset(s: str | None) -> dt.datetime | None:
+    if not s:
+        return None
+    raw = str(s).strip()
+    now = dt.datetime.now()
+    m = re.search(r"(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})", raw)
+    if m:
+        month, day, hh, mm = (int(x) for x in m.groups())
+        try:
+            d = now.replace(month=month, day=day, hour=hh, minute=mm, second=0, microsecond=0)
+        except ValueError:
+            return None
+        if d < now - dt.timedelta(days=2):
+            try:
+                d = d.replace(year=now.year + 1)
+            except ValueError:
+                pass
+        return d
+    m = re.search(r"([A-Za-z]+)\s+(\d{1,2}),\s+(\d{1,2}):(\d{2})", raw)
+    if m:
+        mon = _MONTHS.get(m.group(1))
+        if not mon:
+            return None
+        day, hh, mm = int(m.group(2)), int(m.group(3)), int(m.group(4))
+        try:
+            d = now.replace(month=mon, day=day, hour=hh, minute=mm, second=0, microsecond=0)
+        except ValueError:
+            return None
+        if d < now - dt.timedelta(days=2):
+            try:
+                d = d.replace(year=now.year + 1)
+            except ValueError:
+                pass
+        return d
+    return None
+
+
+def _fmt_until(when: dt.datetime, now: dt.datetime | None = None) -> str:
+    now = now or dt.datetime.now()
+    secs = (when - now).total_seconds()
+    if secs <= 0:
+        return "已到点"
+    hours = secs / 3600
+    if hours < 1:
+        return f"{max(1, int(secs // 60))} 分钟后"
+    if hours < 24:
+        return f"{hours:.0f} 小时后"
+    if hours < 48:
+        return "明天 " + when.strftime("%H:%M")
+    return when.strftime("%m-%d %H:%M")
+
+
+def _sort_rows(rows: list[dict]) -> list[dict]:
+    """周剩余从小到大；查失败的放最后。"""
+    def key(r: dict):
+        ok = r.get("status") == "ok"
+        rem = _remain_pct(r)
+        return (0 if ok else 1, rem if rem is not None else 999.0, r.get("name") or "")
+    return sorted(rows, key=key)
+
+
+def _alerts(rows: list[dict]) -> list[dict]:
+    """还剩额度、且窗口快刷新 → 提醒抓紧用。周窗优先于 5h 窗。"""
+    now = dt.datetime.now()
+    out: list[dict] = []
+    for r in rows:
+        if r.get("status") != "ok":
+            continue
+        if "minimax" in (r.get("name") or "").lower():
+            continue
+        rem = _remain_pct(r)
+        wr = _parse_reset(r.get("reset"))
+        hit_week = False
+        if rem is not None and rem > 3 and wr is not None:
+            hours = (wr - now).total_seconds() / 3600
+            if 0 <= hours <= _WEEKLY_SOON_H:
+                out.append({
+                    "name": r["name"],
+                    "kind": "week",
+                    "remain": rem,
+                    "when": wr,
+                    "until": _fmt_until(wr, now),
+                })
+                hit_week = True
+        if hit_week:
+            continue
+        f_rem = _remain_pct(r, "fiveh_pct")
+        fr = _parse_reset(r.get("fiveh_reset"))
+        if f_rem is not None and f_rem > 10 and fr is not None:
+            hours = (fr - now).total_seconds() / 3600
+            if 0 <= hours <= _FIVEH_SOON_H:
+                out.append({
+                    "name": r["name"],
+                    "kind": "fiveh",
+                    "remain": f_rem,
+                    "when": fr,
+                    "until": _fmt_until(fr, now),
+                })
+    out.sort(key=lambda a: a["when"])
+    return out
+
+
+def _alerts_text(alerts: list[dict]) -> list[str]:
+    if not alerts:
+        return []
+    lines = ["# 快刷新 · 剩余额度抓紧用", ""]
+    for a in alerts:
+        window = "周额度" if a["kind"] == "week" else "5h 窗"
+        lines.append(
+            f"- **{a['name']}**：{window} {a['until']}刷新，还剩 {a['remain']:.0f}%"
+        )
+    lines.append("")
+    return lines
+
+
+def _alerts_html(alerts: list[dict]) -> str:
+    if not alerts:
+        return ""
+    items = "".join(
+        f"<li><b>{a['name']}</b> · "
+        f"{'周额度' if a['kind']=='week' else '5h 窗'} {a['until']}刷新"
+        f"，还剩 {a['remain']:.0f}%，抓紧用</li>"
+        for a in alerts
+    )
+    return f"""<div class="alertband"><h3>快刷新了，剩余额度抓紧用</h3><ul>{items}</ul></div>"""
+
+
 # ---------- 输出 ----------
 
 def render(rows: list[dict]) -> str:
-    lines = [f"# AI 额度快照 {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
+    rows = _sort_rows(rows)
+    alerts = _alerts(rows)
+    lines = [f"# AI 额度快照 {dt.datetime.now().strftime('%Y-%m-%d %H:%M')} · 按周剩余从小到大", ""]
     for r in rows:
         if r.get("status") != "ok":
             lines.append(f"- **{r['name']}**：{r['status']}")
             continue
+        rem = _remain_pct(r)
+        rem_s = ""
+        if rem is not None and f"剩 {rem:g}%" not in str(r.get("used_text") or ""):
+            rem_s = f"，剩 {rem:g}%"
         s = f"- **{r['name']}**：本周已用 {r['used_text']}"
         if r.get("used_pct") is not None and "%" not in str(r["used_text"]):
             s += f"（{r['used_pct']}%）"
+        s += rem_s
         s += f"，周重置 {r.get('reset', '?')}"
         if r.get("fiveh_text"):
             s += f"，5h窗已用 {r['fiveh_text']}（重置 {r.get('fiveh_reset', '?')}）"
         if r.get("note"):
             s += f"，{r['note']}"
         lines.append(s)
+    extra = _alerts_text(alerts)
+    if extra:
+        lines.append("")
+        lines.extend(extra)
     return "\n".join(lines)
 
 
@@ -463,13 +627,15 @@ def _color(pct) -> str:
     return "#f85149"
 
 
-def _card(r: dict) -> str:
+def _card(r: dict, alert: dict | None = None) -> str:
     name = r["name"]
     if r.get("status") != "ok":
         return f"""<div class="card"><div class="top"><span class="name">{name}</span>
 <span class="pill bad">异常</span></div><div class="msg">{r['status']}</div></div>"""
     pct = r.get("used_pct")
+    rem = _remain_pct(r)
     pct_txt = f"{pct:g}%" if pct is not None else "—"
+    rem_txt = f"剩 {rem:g}%" if rem is not None else ""
     c = _color(pct)
     fiveh = ""
     if r.get("fiveh_text"):
@@ -479,24 +645,195 @@ def _card(r: dict) -> str:
 <div class="bar small"><div class="fill" style="width:{fp or 0}%;background:{fc}"></div></div>
 <div class="meta">已用 {r['fiveh_text']} · 重置 {r.get('fiveh_reset', '?')}</div>"""
     note = f"<div class='meta dim'>{r['note']}</div>" if r.get("note") else ""
-    return f"""<div class="card"><div class="top"><span class="name">{name}</span>
-<span class="pill ok">正常</span></div>
+    urgent = " urgent" if alert else ""
+    pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
+    return f"""<div class="card{urgent}"><div class="top"><span class="name">{name}</span>
+{pill}</div>
 <div class="pct" style="color:{c}">{pct_txt}</div>
+<div class="remain">{rem_txt}</div>
 <div class="bar"><div class="fill" style="width:{pct or 0}%;background:{c}"></div></div>
 <div class="meta">本周已用 {r.get('used_text', '?')} · 重置 {r.get('reset', '?')}</div>
 {fiveh}{note}</div>"""
 
 
-def render_html(rows: list[dict], path: Path) -> None:
+FINANCE_MD = Path(os.environ.get(
+    "QUOTA_FINANCE_MD",
+    "/Users/insistgang/Documents/knowledge/06-Growth/Finance/大模型订阅与消费盘点.md"))
+
+
+def _strip_md(s: str) -> str:
+    return s.replace("**", "").replace("~~", "").strip()
+
+
+def _load_finance() -> dict:
+    """从《大模型订阅与消费盘点.md》解析：订阅表 / 历史充值台账 / 非AI订阅 / 合计口径。"""
+    out = {"subs": [], "ledger": [], "non_ai": [], "total_ai": "", "total_all": ""}
+    try:
+        text = FINANCE_MD.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        return out
+    section = ""
+    for line in text.splitlines():
+        if line.startswith("## 一、"):
+            section = "subs"; continue
+        if line.startswith("## 二、"):
+            section = "ledger"; continue
+        if line.startswith("## "):
+            if section in ("subs", "ledger"):
+                section = ""
+        if section and line.startswith("|") and "---" not in line:
+            cells = [_strip_md(c) for c in line.strip().strip("|").split("|")]
+            if section == "subs" and len(cells) >= 5 and cells[0] != "产品":
+                if "已停用" not in cells[1] and "已停用" not in cells[0]:
+                    out["subs"].append({"name": cells[0], "cost": cells[2], "renewal": cells[4]})
+            elif section == "ledger" and len(cells) >= 3 and cells[0] != "日期":
+                out["ledger"].append({"date": cells[0], "item": cells[1], "amount": cells[2]})
+        m = re.search(r"AI 固定订阅合计（本人实付）：约\s*([\d.]+\s*元/月)", line)
+        if m:
+            out["total_ai"] = m.group(1)
+        m2 = re.search(r"固定订阅总额约\s*\**([\d.]+\s*元/月)", line)
+        if m2:
+            out["total_all"] = m2.group(1)
+        m3 = re.match(r"^\s*-\s*(iCloud|得到会员|得到大脑会员|微信读书|百度网盘|视频会员)：(.+)$", line)
+        if m3:
+            out["non_ai"].append(f"{m3.group(1)}：{_strip_md(m3.group(2))}")
+    return out
+
+
+_SVC_ICONS = [
+    ("ChatGPT", "🤖"), ("Kimi", "🌙"), ("Grok", "🚀"), ("Gemini", "♊"),
+    ("MiniMax", "🎬"), ("智谱", "🧠"), ("ChatGLM", "🧠"), ("中转", "🔀"),
+    ("DeepSeek", "🔍"), ("Claude", "🎭"), ("iCloud", "☁️"), ("得到", "🎧"),
+    ("微信读书", "📚"), ("百度网盘", "💾"), ("视频", "📺"),
+]
+
+
+def _svc_icon(name: str) -> str:
+    for k, v in _SVC_ICONS:
+        if k.lower() in name.lower():
+            return v
+    return "📦"
+
+
+def _short_renewal(s: str) -> str:
+    """把冗长的刷新/到期描述收成一行：每月 X/Y 日 + 到期日。"""
+    days = re.findall(r"每月\s*(\d+)\s*日", s)
+    expiry = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:到期|续费)", s)
+    parts = []
+    if days:
+        parts.append("每月 " + "/".join(days) + " 日")
+    if expiry:
+        parts.append(expiry.group(1) + " 到期")
+    if parts:
+        return "；".join(parts)
+    return s if len(s) <= 16 else s[:15] + "…"
+
+
+def _days_left(expiry: str) -> int | None:
+    try:
+        return (dt.date.fromisoformat(expiry) - dt.date.today()).days
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _countdown_pill(expiry: str | None) -> str:
+    if not expiry:
+        return ""
+    d = _days_left(expiry)
+    if d is None:
+        return ""
+    if d < 0:
+        return "<span class='cd red'>已到期</span>"
+    if d < 30:
+        cls = "red"
+    elif d < 60:
+        cls = "yellow"
+    else:
+        cls = "green"
+    return f"<span class='cd {cls}'>剩 {d} 天</span>"
+
+
+def _subs_html(public: bool) -> str:
+    fin = _load_finance()
+    if not fin["subs"] and not fin["ledger"]:
+        return ""
+
+    def pub(s: str) -> str:
+        return s.replace("Andy", "朋友") if public else s
+
+    cards = []
+    for r in fin["subs"]:
+        name, cost, renewal = pub(r["name"]), pub(r["cost"]), pub(r["renewal"])
+        expiry_m = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:到期|续费)", renewal)
+        expiry = expiry_m.group(1) if expiry_m else None
+        cards.append(f"""<div class="scard">
+<div class="sname">{_svc_icon(name)} {name}</div>
+<div class="scost">{cost}</div>
+<div class="smeta">{_short_renewal(renewal)} {_countdown_pill(expiry)}</div>
+</div>""")
+    ledger_trs = "".join(
+        f"<tr><td>{l['date']}</td><td>{_svc_icon(l['item'])} {pub(l['item'])}</td><td class='amt'>{l['amount']}</td></tr>"
+        for l in fin["ledger"])
+    non_ai = "".join(
+        f"<div class='scard mini'><div class='sname'>{_svc_icon(x)} {pub(x)}</div></div>"
+        for x in fin["non_ai"])
+    totals = ""
+    if fin["total_ai"] or fin["total_all"]:
+        parts = []
+        if fin["total_ai"]:
+            parts.append(f"本人 AI 固定支出约 {fin['total_ai']}")
+        if fin["total_all"]:
+            parts.append(f"含非 AI 合计约 {fin['total_all']}")
+        totals = f"<div class='totalband'>💰 {' · '.join(parts)}</div>"
+    return f"""<h2>💳 订阅 · 到期 · 续费</h2>
+{totals}
+<div class="sgrid">{''.join(cards)}</div>
+<h2>📒 消费台账（历史充值）</h2>
+<table class="ledger"><tr><td>日期</td><td>项目</td><td>金额</td></tr>{ledger_trs}</table>
+<h2>🧾 非 AI 固定订阅</h2>
+<div class="sgrid">{non_ai}</div>"""
+
+
+PUBLIC_LABELS = {
+    "Kimi · 本人（948/年）": "Kimi · 主账号",
+    "Kimi · Andy（199/月）": "Kimi · 副账号",
+}
+
+
+def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
+                public: bool = False) -> str:
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-    cards = "".join(_card(r) for r in rows)
+    rows = _sort_rows(list(rows))
+    if public:
+        rows = [{**r, "name": PUBLIC_LABELS.get(r["name"], r["name"])} for r in rows]
+    alerts = _alerts(rows)
+    alert_by_name = {a["name"]: a for a in alerts}
+    cards = "".join(_card(r, alert_by_name.get(r["name"])) for r in rows)
+    banner = _alerts_html(alerts)
+    live_ui = """
+<div style="margin:14px 0"><button id="rb" onclick="doRefresh()" style="background:#238636;color:#fff;border:0;border-radius:8px;padding:8px 18px;font-size:14px;cursor:pointer">🔄 重新查询</button>
+<span id="st" style="font-size:12px;color:#8b949e;margin-left:10px"></span></div>
+<script>
+async function doRefresh(){
+  const st=document.getElementById('st');st.textContent=' 查询中（约1分钟，期间可切走）…';
+  document.getElementById('rb').disabled=true;
+  try{await fetch('/api/refresh');poll();}catch(e){st.textContent=' 仅本地服务模式可刷新';document.getElementById('rb').disabled=false;}
+}
+async function poll(){
+  try{const r=await fetch('/api/state');const d=await r.json();
+    if(d.updating){setTimeout(poll,2000);}else{location.reload();}
+  }catch(e){setTimeout(poll,3000);}
+}
+</script>""" if live else ""
     html = f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <title>AI 额度监控 · {now}</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
 *{{box-sizing:border-box}}
 body{{background:#0d1117;color:#e6edf3;font-family:-apple-system,"PingFang SC",sans-serif;padding:28px;max-width:1080px;margin:0 auto}}
-h1{{font-size:20px;margin:0 0 4px}} .ts{{color:#8b949e;font-size:12px;margin-bottom:20px}}
+h1{{font-size:22px;margin:0 0 4px}} .ts{{color:#8b949e;font-size:13px;margin-bottom:6px}}
+h2{{font-size:17px;margin:26px 0 8px}}
+table{{border-collapse:collapse;width:100%}} td{{border:1px solid #30363d;padding:9px 12px;font-size:15px}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}}
 .card{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px}}
 .top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}}
@@ -504,20 +841,112 @@ h1{{font-size:20px;margin:0 0 4px}} .ts{{color:#8b949e;font-size:12px;margin-bot
 .pill{{font-size:11px;padding:2px 8px;border-radius:99px}}
 .pill.ok{{background:rgba(63,185,80,.15);color:#3fb950}}
 .pill.bad{{background:rgba(248,81,73,.15);color:#f85149}}
-.pct{{font-size:34px;font-weight:700;letter-spacing:-1px;margin:2px 0 8px}}
+.pill.warn{{background:rgba(240,136,62,.18);color:#f0883e}}
+.card.urgent{{border-color:#f0883e}}
+.pct{{font-size:34px;font-weight:700;letter-spacing:-1px;margin:2px 0 4px}}
+.remain{{font-size:13px;color:#8b949e;margin-bottom:8px}}
+.alertband{{background:rgba(240,136,62,.1);border:1px solid rgba(240,136,62,.45);border-radius:10px;padding:12px 16px;margin:12px 0 18px}}
+.alertband h3{{margin:0 0 8px;font-size:15px;color:#f0883e}}
+.alertband ul{{margin:0;padding-left:18px}}
+.alertband li{{font-size:14px;margin:5px 0}}
 .bar{{height:8px;background:#21262d;border-radius:99px;overflow:hidden}}
 .bar.small{{height:5px;margin-top:4px}}
 .fill{{height:100%;border-radius:99px;transition:width .4s}}
-.meta{{font-size:12px;color:#c9d1d9;margin-top:8px}}
+.meta{{font-size:13px;color:#c9d1d9;margin-top:8px}}
+.meta.nonai{{padding:6px 0;border-bottom:1px dashed #21262d}}
+.card:hover,.scard:hover{{border-color:#58a6ff}}
+.sgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}}
+.scard{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px 16px;transition:border-color .2s}}
+.scard.mini{{padding:10px 14px}}
+.sname{{font-size:14px;font-weight:600;margin-bottom:6px}}
+.scost{{font-size:19px;font-weight:700;color:#58a6ff;margin-bottom:6px}}
+.smeta{{font-size:13px;color:#8b949e}}
+.cd{{font-size:11px;padding:2px 8px;border-radius:99px;margin-left:6px;white-space:nowrap}}
+.cd.green{{background:rgba(63,185,80,.15);color:#3fb950}}
+.cd.yellow{{background:rgba(210,153,34,.15);color:#d29922}}
+.cd.red{{background:rgba(248,81,73,.15);color:#f85149}}
+.totalband{{background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);border-radius:10px;padding:10px 16px;font-size:15px;font-weight:600;margin-bottom:14px}}
+table.ledger td{{font-size:14px;padding:7px 12px}}
+table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap}}
 .meta.dim{{color:#8b949e}}
 .sub{{font-size:11px;color:#8b949e;margin-top:12px}}
 .msg{{font-size:13px;color:#d29922}}
 </style></head><body>
 <h1>🤖 AI 额度监控</h1>
-<div class="ts">生成于 {now} · 统一口径：本周已用 / 周重置 · 数据源全部本机只读</div>
+<div class="ts">更新于 {now} · {"公开快照 · 每日自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · 卡片按周剩余从小到大</div>
+{live_ui}
 <div class="grid">{cards}</div>
+{banner}
+{_subs_html(public)}
 </body></html>"""
-    path.write_text(html, encoding="utf-8")
+    if path is not None:
+        path.write_text(html, encoding="utf-8")
+    return html
+
+
+# ---------- 本地服务模式 ----------
+
+_STATE: dict = {"rows": [], "updating": False, "last": None}
+_STATE_LOCK = threading.Lock()
+
+
+def _refresh_state(log: bool = True) -> None:
+    rows = collect()
+    with _STATE_LOCK:
+        _STATE["rows"] = rows
+        _STATE["updating"] = False
+        _STATE["last"] = dt.datetime.now().isoformat(timespec="seconds")
+    if log:
+        append_log(rows)
+    try:
+        render_html(rows, Path(__file__).with_name("quota-dashboard.html"))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def serve(port: int = 8788) -> None:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def _send(self, body: str, ctype: str = "text/html; charset=utf-8", code: int = 200):
+            data = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):  # noqa: N802
+            if self.path.startswith("/api/refresh"):
+                with _STATE_LOCK:
+                    busy = _STATE["updating"]
+                    if not busy:
+                        _STATE["updating"] = True
+                if not busy:
+                    threading.Thread(target=_refresh_state, daemon=True).start()
+                self._send(json.dumps({"ok": True, "busy": busy}), "application/json")
+            elif self.path.startswith("/api/state"):
+                with _STATE_LOCK:
+                    self._send(json.dumps({"updating": _STATE["updating"], "last": _STATE["last"]}),
+                               "application/json")
+            else:
+                with _STATE_LOCK:
+                    rows = list(_STATE["rows"])
+                if not rows:
+                    self._send("<meta charset='utf-8'><body style='background:#0d1117;color:#e6edf3;font-family:sans-serif;padding:40px'>"
+                               "首次查询进行中，约 1 分钟…<script>setTimeout(()=>location.reload(),5000)</script>")
+                else:
+                    self._send(render_html(rows, live=True))
+
+        def log_message(self, *a):  # 静默
+            pass
+
+    threading.Thread(target=_refresh_state, kwargs={"log": True}, daemon=True).start()
+    with _STATE_LOCK:
+        _STATE["updating"] = True
+    url = f"http://127.0.0.1:{port}"
+    print(f"🤖 额度监控服务已启动：{url}（Ctrl+C 停止）")
+    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 
 
 def append_log(rows: list[dict]) -> None:
@@ -537,7 +966,13 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--log", action="store_true", help="追加快照到 quota-log.csv")
     ap.add_argument("--html", action="store_true", help="生成 quota-dashboard.html 仪表盘")
+    ap.add_argument("--serve", action="store_true", help="启动本地服务，网页上可直接刷新查询")
+    ap.add_argument("--port", type=int, default=8788)
+    ap.add_argument("--public-html", type=str, default="", help="生成脱敏公开版页面到指定路径")
     args = ap.parse_args()
+    if args.serve:
+        serve(args.port)
+        return 0
     rows = collect()
     if args.log:
         append_log(rows)
@@ -545,6 +980,11 @@ def main() -> int:
         out = Path(__file__).with_name("quota-dashboard.html")
         render_html(rows, out)
         print(f"dashboard: {out}")
+    if args.public_html:
+        p = Path(args.public_html)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        render_html(rows, p, public=True)
+        print(f"public: {p}")
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=1))
     else:

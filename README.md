@@ -2,7 +2,7 @@
 
 一条命令，把这台 Mac 上所有 AI 编程工具的**本周已用额度**汇总成一张表，附带一个本地卡片式仪表盘。
 
-**📊 线上快照（每日自动更新）**：https://insistgang.top/ai-quota-monitor/
+**📊 线上快照（每天 9:30–23:30 每小时更新）**：https://insistgang.top/ai-quota-monitor/
 
 ## 支持的数据源
 
@@ -23,12 +23,12 @@ python3 quota_report.py --json     # 机器可读输出
 python3 quota_report.py --log      # 追加快照到 quota-log.csv（攒每日底账）
 python3 quota_report.py --html     # 生成 quota-dashboard.html 仪表盘
 python3 quota_report.py --serve    # 本地服务模式：http://127.0.0.1:8788 页面上可点按钮实时刷新
-./publish.sh                       # 采集 + 生成公开版页面 + 推送 GitHub Pages（每日定时任务跑的就是它）
+./publish.sh                       # 采集 + 生成公开版页面 + 推送 GitHub Pages（定时任务跑的就是它）
 ```
 
 仪表盘长这样：每张卡 = 一个模型，大号百分比 + 进度条，按用量变色（🟢<50% / 🟡50-80% / 🟠80-95% / 🔴>95%），Kimi/Antigravity 附 5 小时窗子条。
 
-## 定时每天自动跑（macOS launchd）
+## 定时自动跑（macOS launchd）
 
 ```bash
 cp examples/com.leo.quota-report.plist ~/Library/LaunchAgents/
@@ -36,7 +36,9 @@ cp examples/com.leo.quota-report.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 ```
 
-默认每天 12:30 跑一次（写 CSV + 刷 HTML）；电脑睡着错过会在唤醒后补跑。
+默认每天 **9:30–23:30 每小时一次**（共 15 次）。launchd 调用 `~/.local/bin/quota-publish`（不放在文稿目录，避免 macOS TCC 拦截），再进入仓库跑采集、写 CSV、刷 HTML、推公开页。电脑睡着错过会在唤醒后补跑。
+
+查询本身**不消耗对话/生成额度**：Kimi / MiniMax 走只读用量接口；Grok / Codex / Antigravity 只开隐藏 TUI 发 `/usage`、`/status` 截屏，不向模型发任务。
 
 ## 依赖
 
