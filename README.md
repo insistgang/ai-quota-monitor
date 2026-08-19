@@ -9,7 +9,7 @@
 | 源 | 取数方式 |
 |---|---|
 | Kimi for Coding（双账号） | `api.kimi.com/coding/v1/usages` API 直连（key 从 KimiCodeBar 配置读取） |
-| Codex（Mac） | tmux 驱动 `codex` TUI 的 `/status` 状态栏（实时）；重置时间用会话文件推算 |
+| Codex（Mac） | tmux 驱动 `codex` TUI 的 `/status` 状态栏（实时）；重置时间用会话里的官方 `resets_at` |
 | Codex（Win / 远程机） | `ssh` 到远程机读取最新会话的 rate_limits |
 | Grok（SuperGrok） | tmux 驱动 `grok` TUI 的 `/usage` 面板截屏解析 |
 | MiniMax | `mmx quota show`（官方 CLI，JSON 输出） |
