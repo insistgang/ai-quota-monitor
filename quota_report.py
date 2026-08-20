@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import html
 import json
 import os
 import re
@@ -543,6 +544,9 @@ def _alerts(rows: list[dict]) -> list[dict]:
                 hit_week = True
         if hit_week:
             continue
+        # Kimi 的 5h 窗只限制短时吞吐，不代表周额度即将过期；提醒只看周重置。
+        if "kimi" in (r.get("name") or "").lower():
+            continue
         f_rem = _remain_pct(r, "fiveh_pct")
         fr = _parse_reset(r.get("fiveh_reset"))
         if f_rem is not None and f_rem > 10 and fr is not None:
@@ -572,12 +576,17 @@ def _alerts_text(alerts: list[dict]) -> list[str]:
     return lines
 
 
+def _html_text(value: object) -> str:
+    """把动态数据编码为 HTML 文本，保留生成器自身的标签结构。"""
+    return html.escape(str(value), quote=True)
+
+
 def _alerts_html(alerts: list[dict]) -> str:
     if not alerts:
         return ""
     items = "".join(
-        f"<li><b>{a['name']}</b> · "
-        f"{'周额度' if a['kind']=='week' else '5h 窗'} {a['until']}刷新"
+        f"<li><b>{_html_text(a['name'])}</b> · "
+        f"{'周额度' if a['kind']=='week' else '5h 窗'} {_html_text(a['until'])}刷新"
         f"，还剩 {a['remain']:.0f}%，抓紧用</li>"
         for a in alerts
     )
@@ -628,10 +637,10 @@ def _color(pct) -> str:
 
 
 def _card(r: dict, alert: dict | None = None) -> str:
-    name = r["name"]
+    name = _html_text(r["name"])
     if r.get("status") != "ok":
         return f"""<div class="card"><div class="top"><span class="name">{name}</span>
-<span class="pill bad">异常</span></div><div class="msg">{r['status']}</div></div>"""
+<span class="pill bad">异常</span></div><div class="msg">{_html_text(r['status'])}</div></div>"""
     pct = r.get("used_pct")
     rem = _remain_pct(r)
     pct_txt = f"{pct:g}%" if pct is not None else "—"
@@ -643,8 +652,8 @@ def _card(r: dict, alert: dict | None = None) -> str:
         fc = _color(fp)
         fiveh = f"""<div class="sub">5h 窗</div>
 <div class="bar small"><div class="fill" style="width:{fp or 0}%;background:{fc}"></div></div>
-<div class="meta">已用 {r['fiveh_text']} · 重置 {r.get('fiveh_reset', '?')}</div>"""
-    note = f"<div class='meta dim'>{r['note']}</div>" if r.get("note") else ""
+<div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div>"""
+    note = f"<div class='meta dim'>{_html_text(r['note'])}</div>" if r.get("note") else ""
     urgent = " urgent" if alert else ""
     pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
     return f"""<div class="card{urgent}"><div class="top"><span class="name">{name}</span>
@@ -652,7 +661,7 @@ def _card(r: dict, alert: dict | None = None) -> str:
 <div class="pct" style="color:{c}">{pct_txt}</div>
 <div class="remain">{rem_txt}</div>
 <div class="bar"><div class="fill" style="width:{pct or 0}%;background:{c}"></div></div>
-<div class="meta">本周已用 {r.get('used_text', '?')} · 重置 {r.get('reset', '?')}</div>
+<div class="meta">本周已用 {_html_text(r.get('used_text', '?'))} · 重置 {_html_text(r.get('reset', '?'))}</div>
 {fiveh}{note}</div>"""
 
 
@@ -767,23 +776,24 @@ def _subs_html(public: bool) -> str:
         expiry_m = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:到期|续费)", renewal)
         expiry = expiry_m.group(1) if expiry_m else None
         cards.append(f"""<div class="scard">
-<div class="sname">{_svc_icon(name)} {name}</div>
-<div class="scost">{cost}</div>
-<div class="smeta">{_short_renewal(renewal)} {_countdown_pill(expiry)}</div>
+<div class="sname">{_svc_icon(name)} {_html_text(name)}</div>
+<div class="scost">{_html_text(cost)}</div>
+<div class="smeta">{_html_text(_short_renewal(renewal))} {_countdown_pill(expiry)}</div>
 </div>""")
     ledger_trs = "".join(
-        f"<tr><td>{l['date']}</td><td>{_svc_icon(l['item'])} {pub(l['item'])}</td><td class='amt'>{l['amount']}</td></tr>"
+        f"<tr><td>{_html_text(l['date'])}</td><td>{_svc_icon(l['item'])} {_html_text(pub(l['item']))}</td>"
+        f"<td class='amt'>{_html_text(l['amount'])}</td></tr>"
         for l in fin["ledger"])
     non_ai = "".join(
-        f"<div class='scard mini'><div class='sname'>{_svc_icon(x)} {pub(x)}</div></div>"
+        f"<div class='scard mini'><div class='sname'>{_svc_icon(x)} {_html_text(pub(x))}</div></div>"
         for x in fin["non_ai"])
     totals = ""
     if fin["total_ai"] or fin["total_all"]:
         parts = []
         if fin["total_ai"]:
-            parts.append(f"本人 AI 固定支出约 {fin['total_ai']}")
+            parts.append(f"本人 AI 固定支出约 {_html_text(fin['total_ai'])}")
         if fin["total_all"]:
-            parts.append(f"含非 AI 合计约 {fin['total_all']}")
+            parts.append(f"含非 AI 合计约 {_html_text(fin['total_all'])}")
         totals = f"<div class='totalband'>💰 {' · '.join(parts)}</div>"
     return f"""<h2>💳 订阅 · 到期 · 续费</h2>
 {totals}
@@ -802,15 +812,50 @@ PUBLIC_LABELS = {
 _HIST_PUBLIC = {"Kimi · 本人": "Kimi · 主账号", "Kimi · Andy": "Kimi · 副账号"}
 
 
+def _reset_marker_minutes(raw: str | None) -> int | None:
+    """把周重置标记归一化为闰年内分钟数，不依赖日志采集年份。"""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    m = re.search(r"(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})", s)
+    if m:
+        month, day, hh, mm = (int(x) for x in m.groups())
+    else:
+        m = re.search(r"([A-Za-z]+)\s+(\d{1,2}),\s+(\d{1,2}):(\d{2})", s)
+        if not m or m.group(1) not in _MONTHS:
+            return None
+        month = _MONTHS[m.group(1)]
+        day, hh, mm = (int(x) for x in m.groups()[1:])
+    try:
+        marker = dt.datetime(2000, month, day, hh, mm)
+    except ValueError:
+        return None
+    return int((marker - dt.datetime(2000, 1, 1)).total_seconds() // 60)
+
+
+def _is_weekly_reset(previous: tuple[str, float, str], current: tuple[str, float, str]) -> bool:
+    """判断相邻快照间是否跨过周窗；优先使用重置时间，缺失时才看明显回落。"""
+    _, previous_pct, previous_reset = previous
+    _, current_pct, current_reset = current
+    previous_marker = _reset_marker_minutes(previous_reset)
+    current_marker = _reset_marker_minutes(current_reset)
+    if previous_marker is not None and current_marker is not None:
+        minutes_per_leap_year = 366 * 24 * 60
+        advance = (current_marker - previous_marker) % minutes_per_leap_year
+        return 5 * 24 * 60 <= advance <= 9 * 24 * 60
+    return previous_pct - current_pct >= 20.0
+
+
 def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
     """从 LOG_CSV 计算每源每日消耗（周计数口径）。
 
-    日消耗 = 当天末次快照 − 前一日末次快照；底账首日无前值，从当天首次快照起算
-    （partial 标记）。负值视为周重置。返回 [(日期, [行...]), ...]，新日期在前。
+    普通日为当天末次快照 − 前一日末次快照；跨周重置时按重置前、后两段相加。
+    底账首日或快照中断后的首日无连续前值，从当天首次快照起算（partial 标记）。
+    返回 [(日期, [行...]), ...]，新日期在前。
     """
     if not LOG_CSV.exists():
         return []
-    per: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    per: dict[tuple[str, str], list[tuple[str, float, str]]] = {}
     with open(LOG_CSV, encoding="utf-8") as f:
         for r in csv.reader(f):
             if len(r) < 4 or not r[0] or not r[0][0].isdigit():
@@ -820,7 +865,8 @@ def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
             except ValueError:
                 continue
             name = r[1].split("（")[0].strip()  # 合并标签改名（如 Kimi 本人 99/月→948/年）
-            per.setdefault((r[0][:10], name), []).append((r[0], pct))
+            reset = r[5] if len(r) > 5 else ""
+            per.setdefault((r[0][:10], name), []).append((r[0], pct, reset))
     dates = sorted({d for d, _ in per}, reverse=True)[:days]
     out = []
     for d in dates:
@@ -830,15 +876,35 @@ def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
                 continue
             snaps.sort()
             prev_days = [p for (p, n2) in per if n2 == name and p < d]
-            if prev_days:
-                prev = sorted(per[(max(prev_days), name)])[-1][1]
-                delta, partial = snaps[-1][1] - prev, False
-            elif len(snaps) >= 2:
-                delta, partial = snaps[-1][1] - snaps[0][1], True
+            previous_day = max(prev_days) if prev_days else None
+            try:
+                is_consecutive = (
+                    previous_day is not None
+                    and dt.date.fromisoformat(d) - dt.date.fromisoformat(previous_day) == dt.timedelta(days=1)
+                )
+            except ValueError:
+                is_consecutive = False
+            if is_consecutive:
+                previous = sorted(per[(previous_day, name)])[-1]
+                sequence = [previous, *snaps]
+                partial = False
             else:
-                continue
+                if len(snaps) < 2:
+                    continue
+                sequence = snaps
+                partial = True
+
+            delta = 0.0
+            segment_start = sequence[0][1]
+            reset = False
+            for previous, current in zip(sequence, sequence[1:]):
+                if _is_weekly_reset(previous, current):
+                    delta += max(0.0, previous[1] - segment_start)
+                    segment_start = 0.0
+                    reset = True
+            delta += max(0.0, sequence[-1][1] - segment_start)
             rows.append({"name": name, "delta": round(delta, 1),
-                         "reset": delta < -0.05, "partial": partial})
+                         "reset": reset, "partial": partial})
         out.append((d, rows))
     return out
 
@@ -850,28 +916,28 @@ def _history_html(public: bool) -> str:
         return ""
     blocks = []
     for d, rows in days:
-        shown = [r for r in rows if not r["reset"] and r["delta"] > 0.05]
-        resets = [r for r in rows if r["reset"]]
+        shown = [r for r in rows if r["delta"] > 0.05]
+        resets = [r for r in rows if r["reset"] and r["delta"] <= 0.05]
         lines = []
         if shown:
             mx = max(r["delta"] for r in shown)
             for r in sorted(shown, key=lambda x: -x["delta"]):
                 name = _HIST_PUBLIC.get(r["name"], r["name"]) if public else r["name"]
                 w = max(3, round(r["delta"] / mx * 100))
-                tag = "*" if r["partial"] else ""
+                tags = ("*" if r["partial"] else "") + (" ↺" if r["reset"] else "")
                 lines.append(
-                    f'<div class="hrow"><span class="hname">{name}</span>'
+                    f'<div class="hrow"><span class="hname">{_html_text(name)}</span>'
                     f'<div class="hbar"><div class="hfill" style="width:{w}%"></div></div>'
-                    f'<span class="hval">+{r["delta"]:g}%{tag}</span></div>')
+                    f'<span class="hval">+{r["delta"]:g}%{tags}</span></div>')
         else:
             lines.append('<div class="hrow dim">当日未记录到消耗</div>')
         for r in resets:
             name = _HIST_PUBLIC.get(r["name"], r["name"]) if public else r["name"]
-            lines.append(f'<div class="hrow dim">{name} ↺ 周重置</div>')
-        blocks.append(f'<div class="hday"><div class="hdate">{d[5:]}</div>{"".join(lines)}</div>')
+            lines.append(f'<div class="hrow dim">{_html_text(name)} ↺ 周重置</div>')
+        blocks.append(f'<div class="hday"><div class="hdate">{_html_text(d[5:])}</div>{"".join(lines)}</div>')
     return ('<h2>📊 每日消耗（周计数口径）</h2>' + "".join(blocks)
-            + '<div class="sub">日消耗 = 当天末次快照 − 前一日末次快照；* 底账首日从当天首次快照起算；'
-              '5h 窗与周重置日不计；底账自 08-19 起，随快照积累逐日丰富</div>')
+            + '<div class="sub">普通日 = 当天末次快照 − 前一日末次快照；↺ 跨周重置日按重置前后分段相加；'
+              '* 底账首日或快照中断后从当天首次快照起算；5h 窗不计；底账随快照积累逐日丰富</div>')
 
 
 def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
