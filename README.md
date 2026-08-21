@@ -27,7 +27,7 @@ python3 quota_report.py --log      # 追加快照到 quota-log.csv（攒每日�
 python3 quota_report.py --html     # 生成 quota-dashboard.html 仪表盘
 python3 quota_report.py --serve    # 本地服务模式：http://127.0.0.1:8788 页面上可点按钮实时刷新
 python3 quota_report.py --sync-doubao-chrome  # 单独验证/刷新豆包官网 DOM 快照
-./publish.sh                       # 采集 + 生成公开版页面 + 推送 GitHub Pages（定时任务跑的就是它）
+./publish.sh                       # 采集 + 生成公开版页面 + 推送 GitHub Pages
 ```
 
 豆包首次使用前，在 Chrome 打开并登录
@@ -39,12 +39,13 @@ python3 quota_report.py --sync-doubao-chrome  # 单独验证/刷新豆包官网 
 ## 定时自动跑（macOS launchd）
 
 ```bash
+./scripts/install-launchd-runtime.sh
 cp examples/com.leo.quota-report.plist ~/Library/LaunchAgents/
 # 把 plist 里的 /Users/YOURNAME 改成你的路径
 launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 ```
 
-默认每天 **9:30–23:30 每小时一次**（共 15 次）。launchd 调用 `~/.local/bin/quota-publish`（不放在文稿目录，避免 macOS TCC 拦截），该入口只委托仓库内的 `publish.sh` 执行采集、写 CSV、刷新三个 HTML 页面并推送，避免两份发布逻辑漂移。电脑睡着错过会在唤醒后补跑。
+默认每天 **9:30–23:30 每小时一次**（共 15 次）。launchd 调用 `~/.local/bin/quota-publish`（不放在文稿目录，避免 macOS TCC 拦截），再由 Python 打开仓库内唯一的 `publish_runtime.py`，执行采集、写 CSV、刷新三个 HTML 页面并推送。手动运行 `publish.sh` 也走同一个 Python 入口，因此没有两份发布逻辑。入口模板更新后重新执行安装命令即可。电脑睡着错过会在唤醒后补跑。
 
 查询本身**不消耗对话/生成额度**：Kimi / MiniMax 走只读用量接口；豆包读取官网可见 DOM；Grok / Codex / Antigravity 只开隐藏 TUI 发 `/usage`、`/status` 截屏，不向模型发任务。
 
