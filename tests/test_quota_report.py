@@ -196,6 +196,36 @@ class DoubaoDomTests(unittest.TestCase):
         )
 
 
+class AntigravityQuotaTests(unittest.TestCase):
+    def test_exhausted_group_stays_visible_with_full_usage_and_reset_time(self):
+        panel = """
+CLAUDE AND GPT MODELS
+  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
+
+  Weekly Limit Remaining
+    [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0.00%
+    Refreshes in 21h 11m
+
+  Five Hour Limit Remaining
+    Disabled: You have hit your weekly limit, the 5-hour limit does not currently apply.
+"""
+
+        with mock.patch.object(quota_report, "_tmux_slash_probe", return_value=panel):
+            rows = quota_report._agy()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "Antigravity · Claude/GPT 组")
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["used_pct"], 100.0)
+        self.assertEqual(rows[0]["used_text"], "100%")
+        self.assertRegex(rows[0]["reset"], r"^\d{2}-\d{2} \d{2}:\d{2}$")
+        self.assertNotIn("fiveh_pct", rows[0])
+
+        card = quota_report._card(rows[0])
+        self.assertIn(">100%</div>", card)
+        self.assertIn(f"重置 {rows[0]['reset']}", card)
+
+
 class DailyDeltaTests(unittest.TestCase):
     def _daily_rows(self, snapshots, day="2026-08-20"):
         with tempfile.TemporaryDirectory() as tmp:
