@@ -1,5 +1,6 @@
 import csv
 import datetime as dt
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,77 @@ import quota_report
 
 
 CSV_HEADER = ["ts", "name", "status", "used_pct", "used_text", "reset", "fiveh_text"]
+
+
+class DoubaoDomTests(unittest.TestCase):
+    DOM_TEXT = """
+账号昵称不应进入缓存
+标准套餐
+订阅与额度管理免费体验至9月16日
+升级至标准套餐
+购买创作额度包
+当前时段
+已用 <1%
+2 小时 24 分钟后重置
+近 7 天
+已用 7%
+8月24日 21:55 重置
+订阅记录
+"""
+
+    def test_parse_visible_dom_extracts_weekly_and_current_windows(self):
+        captured = dt.datetime(
+            2026, 8, 21, 16, 40,
+            tzinfo=dt.timezone(dt.timedelta(hours=8)),
+        )
+
+        row = quota_report._parse_doubao_dom(self.DOM_TEXT, captured)
+
+        self.assertEqual(row["name"], "豆包 · 标准套餐")
+        self.assertEqual(row["used_pct"], 7.0)
+        self.assertEqual(row["used_text"], "7%")
+        self.assertEqual(row["reset"], "08-24 21:55")
+        self.assertEqual(row["fiveh_pct"], 1.0)
+        self.assertEqual(row["fiveh_text"], "<1%")
+        self.assertEqual(row["fiveh_reset"], "08-21 19:04")
+        self.assertEqual(row["fiveh_label"], "当前时段")
+        self.assertIn("免费体验至9月16日", row["note"])
+
+    def test_import_cache_contains_only_normalized_quota_fields(self):
+        captured = dt.datetime(
+            2026, 8, 21, 16, 40,
+            tzinfo=dt.timezone(dt.timedelta(hours=8)),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "doubao-quota.json"
+
+            quota_report._import_doubao_dom(self.DOM_TEXT, cache_path, captured)
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(payload["source_url"], quota_report.DOUBAO_QUOTA_URL)
+            self.assertEqual(payload["row"]["used_pct"], 7.0)
+            self.assertNotIn("账号昵称", cache_path.read_text(encoding="utf-8"))
+            self.assertEqual(cache_path.stat().st_mode & 0o777, 0o600)
+
+    def test_stale_cache_remains_visible_but_does_not_look_live(self):
+        captured = dt.datetime(
+            2026, 8, 21, 8, 0,
+            tzinfo=dt.timezone(dt.timedelta(hours=8)),
+        )
+        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT, captured)
+        now = captured + dt.timedelta(hours=7)
+
+        with mock.patch.object(quota_report, "_doubao_max_age_hours", return_value=6):
+            row = quota_report._doubao_row_from_snapshot(snapshot, now)
+
+        self.assertTrue(row["stale"])
+        self.assertIn("快照已过期", row["note"])
+        self.assertEqual(quota_report._alerts([row]), [])
+        self.assertIn("快照过期", quota_report._card(row))
+
+    def test_parser_rejects_non_quota_page_text(self):
+        with self.assertRaisesRegex(ValueError, "当前时段/近 7 天"):
+            quota_report._parse_doubao_dom("豆包聊天页")
 
 
 class DailyDeltaTests(unittest.TestCase):
