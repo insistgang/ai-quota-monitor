@@ -77,8 +77,18 @@ def _doubao_pct(line: str) -> tuple[float, str]:
     if not m:
         raise ValueError("豆包额度百分比缺失")
     value = float(m.group(2))
+    if not 0 <= value <= 100:
+        raise ValueError("豆包额度百分比超出范围")
     raw = f"{'<' if m.group(1) else ''}{m.group(2)}%"
     return value, raw
+
+
+def _doubao_reset_value(month: int, day: int, hour: int, minute: int) -> str:
+    try:
+        dt.datetime(2000, month, day, hour, minute)
+    except ValueError as exc:
+        raise ValueError("豆包额度重置时间非法") from exc
+    return f"{month:02d}-{day:02d} {hour:02d}:{minute:02d}"
 
 
 def _doubao_reset(line: str, captured_at: dt.datetime) -> str:
@@ -86,17 +96,24 @@ def _doubao_reset(line: str, captured_at: dt.datetime) -> str:
     absolute = re.search(r"(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})\s*重置", line)
     if absolute:
         month, day, hour, minute = (int(x) for x in absolute.groups())
-        return f"{month:02d}-{day:02d} {hour:02d}:{minute:02d}"
+        return _doubao_reset_value(month, day, hour, minute)
 
     relative = re.search(
         r"(?:(\d+)\s*天)?\s*(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分钟)?\s*后重置",
         line,
     )
     if relative and any(relative.groups()):
-        days, hours, minutes = (int(x) if x else 0 for x in relative.groups())
-        reset_at = captured_at.replace(second=0, microsecond=0) + dt.timedelta(
-            days=days, hours=hours, minutes=minutes,
-        )
+        try:
+            days, hours, minutes = (int(x) if x else 0 for x in relative.groups())
+            delta = dt.timedelta(days=days, hours=hours, minutes=minutes)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("豆包额度重置时间非法") from exc
+        if delta <= dt.timedelta(0) or delta > dt.timedelta(days=8):
+            raise ValueError("豆包额度重置时间非法")
+        try:
+            reset_at = captured_at.replace(second=0, microsecond=0) + delta
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("豆包额度重置时间非法") from exc
         return reset_at.strftime("%m-%d %H:%M")
     raise ValueError("豆包额度重置时间缺失")
 
@@ -126,16 +143,23 @@ def _parse_doubao_dom(text: str, captured_at: dt.datetime | None = None) -> dict
     current_pct, current_text, current_reset = usage_block(current_idx, weekly_idx)
     weekly_pct, weekly_text, weekly_reset = usage_block(weekly_idx, len(lines))
 
-    plan = next((
-        line for line in lines[:current_idx]
-        if line.endswith("套餐") and not line.startswith(("升级至", "购买"))
-    ), "个人会员")
+    management_idx = next((
+        i for i in range(current_idx - 1, -1, -1)
+        if "订阅与额度管理" in lines[i]
+    ), None)
+    plan = "个人会员"
+    if management_idx is not None and management_idx > 0:
+        candidate = lines[management_idx - 1]
+        if candidate.endswith("套餐") and not candidate.startswith(("升级至", "购买")):
+            plan = candidate
     trial = ""
-    for line in lines[:current_idx]:
-        match = re.search(r"(免费体验至\s*\d{1,2}月\d{1,2}日)", line)
+    if management_idx is not None:
+        match = re.search(
+            r"(免费体验至\s*\d{1,2}月\d{1,2}日)",
+            lines[management_idx],
+        )
         if match:
             trial = match.group(1).replace(" ", "")
-            break
 
     note_parts = ["豆包官网可见 DOM"]
     if trial:
@@ -180,19 +204,47 @@ def _write_doubao_snapshot(snapshot: dict, cache_path: Path = DOUBAO_QUOTA_CACHE
             temp_path.unlink()
 
 
+def _doubao_pct_value_is_valid(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and 0 <= float(value) <= 100
+    )
+
+
+def _doubao_reset_text_is_valid(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    match = re.fullmatch(r"(\d{2})-(\d{2})\s+(\d{2}):(\d{2})", value)
+    if not match:
+        return False
+    try:
+        _doubao_reset_value(*(int(part) for part in match.groups()))
+    except ValueError:
+        return False
+    return True
+
+
 def _read_doubao_snapshot(cache_path: Path = DOUBAO_QUOTA_CACHE) -> dict | None:
     try:
         snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
         captured_at = snapshot.get("captured_at")
         if not isinstance(captured_at, str):
             return None
-        dt.datetime.fromisoformat(captured_at)
+        captured = dt.datetime.fromisoformat(captured_at)
+        row = snapshot.get("row")
         if (
             snapshot.get("schema_version") != 1
-            or not isinstance(snapshot.get("row"), dict)
-            or snapshot["row"].get("status") != "ok"
-            or snapshot["row"].get("used_pct") is None
-            or snapshot["row"].get("fiveh_pct") is None
+            or snapshot.get("source_url") != DOUBAO_QUOTA_URL
+            or captured.tzinfo is None
+            or not isinstance(row, dict)
+            or row.get("status") != "ok"
+            or not isinstance(row.get("name"), str)
+            or not row["name"].startswith("豆包 · ")
+            or not _doubao_pct_value_is_valid(row.get("used_pct"))
+            or not _doubao_pct_value_is_valid(row.get("fiveh_pct"))
+            or not _doubao_reset_text_is_valid(row.get("reset"))
+            or not _doubao_reset_text_is_valid(row.get("fiveh_reset"))
         ):
             return None
         return snapshot
@@ -1200,7 +1252,8 @@ def _history_html(public: bool, days: int = 7, controls: bool = False,
     return ('<div class="section-head"><h2>📊 每日消耗（周计数口径）</h2>' + more + '</div>'
             + tools + "".join(blocks)
             + '<div class="sub">普通日 = 当天末次快照 − 前一日末次快照；↺ 跨周重置日按重置前后分段相加；'
-              '* 底账首日或快照中断后从当天首次快照起算；5h 窗不计；底账随快照积累逐日丰富</div>')
+              '* 底账首日或快照中断后从当天首次快照起算；短时窗口（5h / 当前时段）不计；'
+              '底账随快照积累逐日丰富</div>')
 
 
 def _nav_html(active: str) -> str:

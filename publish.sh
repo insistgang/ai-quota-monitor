@@ -1,12 +1,12 @@
 #!/bin/bash
 # publish.sh — 每日采集额度 → 本地快照/底账 → 生成公开版页面 → 推送 GitHub Pages
-set -u
+set -euo pipefail
 NVM_BIN="$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | tail -1)"
 export PATH="$HOME/.grok/bin:$HOME/.local/bin:${NVM_BIN}:/opt/homebrew/bin:/usr/bin:/bin"
 export TERM=xterm-256color
 cd "$(dirname "$0")"
 
-python3 quota_report.py --log --html --public-html docs/index.html || exit 1
+python3 quota_report.py --log --html --public-html docs/index.html
 
 git add -- docs/index.html docs/history.html docs/subscriptions.html
 if ! git diff --cached --quiet; then

@@ -4,7 +4,7 @@
 on run argv
   if (count of argv) is 0 then error "缺少豆包额度页 URL" number 1000
   set targetUrl to item 1 of argv
-  set jsCode to "(() => { const lines = (document.body ? document.body.innerText : '').split(String.fromCharCode(10)).map(line => line.trim()).filter(Boolean); const current = lines.findIndex(line => line === '当前时段'); if (current < 0) throw new Error('quota section not found'); const record = lines.findIndex((line, index) => index > current && line === '订阅记录'); const head = lines.slice(0, current).filter(line => (line.endsWith('套餐') && !line.startsWith('升级至') && !line.startsWith('购买')) || line.includes('免费体验至')); return [...head.slice(-2), ...lines.slice(current, record > current ? record + 1 : current + 8)].join(String.fromCharCode(10)); })()"
+  set jsCode to "(() => { const lines = (document.body ? document.body.innerText : '').split(String.fromCharCode(10)).map(line => line.trim()).filter(Boolean); const current = lines.findIndex(line => line === '当前时段'); if (current < 0) throw new Error('quota section not found'); const record = lines.findIndex((line, index) => index > current && line === '订阅记录'); let management = -1; for (let index = 0; index < current; index += 1) { if (lines[index].includes('订阅与额度管理')) management = index; } const candidate = management > 0 ? lines[management - 1] : ''; const plan = candidate.endsWith('套餐') && !candidate.startsWith('升级至') && !candidate.startsWith('购买') ? candidate : ''; const managementLine = management >= 0 ? lines[management] : ''; return [plan, managementLine, ...lines.slice(current, record > current ? record + 1 : current + 8)].filter(Boolean).join(String.fromCharCode(10)); })()"
 
   tell application "Google Chrome"
     repeat with chromeWindow in windows
