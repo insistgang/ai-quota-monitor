@@ -4,6 +4,7 @@
 监控对象（统一口径：本周已用 + 周重置）：
 - Kimi（本人 99/月）：KimiCodeBar credentials 里 alias=Leo-usage 的 key
 - Kimi（Andy 199/月）：KimiCodeBar credentials 里 alias=andy* 的 key
+- 豆包个人会员：已登录 Chrome 中官方额度页的可见 DOM
 - Codex（Mac）：最新 ~/.codex/sessions/**/rollout-*.jsonl 的 rate_limits
 - Codex（Win）：ssh desktop 读取对端最新 rollout 的 rate_limits
 - Grok（SuperGrok）：tmux 驱动本机 grok TUI 的 /usage 面板截屏解析
@@ -35,6 +36,12 @@ from pathlib import Path
 HOME = Path.home()
 LOG_CSV = Path(__file__).with_name("quota-log.csv")
 KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
+DOUBAO_QUOTA_URL = "https://www.doubao.com/member/quota-management"
+DOUBAO_QUOTA_CACHE = Path(os.environ.get(
+    "DOUBAO_QUOTA_CACHE",
+    str(HOME / ".cache/ai-quota-monitor/doubao-quota.json"),
+))
+DOUBAO_APPLESCRIPT = Path(__file__).with_name("scripts") / "read_doubao_quota.applescript"
 HTTP_TIMEOUT = 15
 SSH_TIMEOUT = 20
 
@@ -62,6 +69,225 @@ def _fmt_epoch(ts) -> str:
 
 
 # ---------- 数据源 ----------
+
+
+def _doubao_pct(line: str) -> tuple[float, str]:
+    """解析“已用 7%”或“已用 <1%”；小于号场景用上界绘制进度条。"""
+    m = re.search(r"已用\s*(<)?\s*(\d+(?:\.\d+)?)\s*%", line)
+    if not m:
+        raise ValueError("豆包额度百分比缺失")
+    value = float(m.group(2))
+    raw = f"{'<' if m.group(1) else ''}{m.group(2)}%"
+    return value, raw
+
+
+def _doubao_reset(line: str, captured_at: dt.datetime) -> str:
+    """把豆包的中文绝对/相对重置时间归一化为 MM-DD HH:MM。"""
+    absolute = re.search(r"(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})\s*重置", line)
+    if absolute:
+        month, day, hour, minute = (int(x) for x in absolute.groups())
+        return f"{month:02d}-{day:02d} {hour:02d}:{minute:02d}"
+
+    relative = re.search(
+        r"(?:(\d+)\s*天)?\s*(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分钟)?\s*后重置",
+        line,
+    )
+    if relative and any(relative.groups()):
+        days, hours, minutes = (int(x) if x else 0 for x in relative.groups())
+        reset_at = captured_at.replace(second=0, microsecond=0) + dt.timedelta(
+            days=days, hours=hours, minutes=minutes,
+        )
+        return reset_at.strftime("%m-%d %H:%M")
+    raise ValueError("豆包额度重置时间缺失")
+
+
+def _parse_doubao_dom(text: str, captured_at: dt.datetime | None = None) -> dict:
+    """从额度管理页的可见文本中提取最小字段，不保留原始 DOM。"""
+    captured_at = captured_at or dt.datetime.now().astimezone()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    current_idx = next(
+        (i for i, line in enumerate(lines) if line == "当前时段"),
+        None,
+    )
+    weekly_idx = next(
+        (i for i, line in enumerate(lines) if re.fullmatch(r"近\s*7\s*天", line)),
+        None,
+    )
+    if current_idx is None or weekly_idx is None or weekly_idx <= current_idx:
+        raise ValueError("未找到豆包“当前时段/近 7 天”额度区")
+
+    def usage_block(start: int, end: int) -> tuple[float, str, str]:
+        block = lines[start + 1:end]
+        used_line = next((line for line in block if line.startswith("已用")), "")
+        reset_line = next((line for line in block if "重置" in line), "")
+        used_pct, used_text = _doubao_pct(used_line)
+        return used_pct, used_text, _doubao_reset(reset_line, captured_at)
+
+    current_pct, current_text, current_reset = usage_block(current_idx, weekly_idx)
+    weekly_pct, weekly_text, weekly_reset = usage_block(weekly_idx, len(lines))
+
+    plan = next((
+        line for line in lines[:current_idx]
+        if line.endswith("套餐") and not line.startswith(("升级至", "购买"))
+    ), "个人会员")
+    trial = ""
+    for line in lines[:current_idx]:
+        match = re.search(r"(免费体验至\s*\d{1,2}月\d{1,2}日)", line)
+        if match:
+            trial = match.group(1).replace(" ", "")
+            break
+
+    note_parts = ["豆包官网可见 DOM"]
+    if trial:
+        note_parts.append(trial)
+    return {
+        "name": f"豆包 · {plan}",
+        "status": "ok",
+        "used_pct": weekly_pct,
+        "used_text": weekly_text,
+        "reset": weekly_reset,
+        "fiveh_pct": current_pct,
+        "fiveh_text": current_text,
+        "fiveh_reset": current_reset,
+        "fiveh_label": "当前时段",
+        "note": " · ".join(note_parts),
+    }
+
+
+def _doubao_snapshot(text: str, captured_at: dt.datetime | None = None) -> dict:
+    captured_at = captured_at or dt.datetime.now().astimezone()
+    return {
+        "schema_version": 1,
+        "captured_at": captured_at.isoformat(timespec="seconds"),
+        "source_url": DOUBAO_QUOTA_URL,
+        "row": _parse_doubao_dom(text, captured_at),
+    }
+
+
+def _write_doubao_snapshot(snapshot: dict, cache_path: Path = DOUBAO_QUOTA_CACHE) -> None:
+    """原子写入仅含额度数字的 0600 本地缓存。"""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
+    try:
+        temp_path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temp_path.chmod(0o600)
+        temp_path.replace(cache_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _read_doubao_snapshot(cache_path: Path = DOUBAO_QUOTA_CACHE) -> dict | None:
+    try:
+        snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
+        captured_at = snapshot.get("captured_at")
+        if not isinstance(captured_at, str):
+            return None
+        dt.datetime.fromisoformat(captured_at)
+        if (
+            snapshot.get("schema_version") != 1
+            or not isinstance(snapshot.get("row"), dict)
+            or snapshot["row"].get("status") != "ok"
+            or snapshot["row"].get("used_pct") is None
+            or snapshot["row"].get("fiveh_pct") is None
+        ):
+            return None
+        return snapshot
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _doubao_max_age_hours() -> float:
+    try:
+        return max(0.25, float(os.environ.get("DOUBAO_QUOTA_MAX_AGE_HOURS", "6")))
+    except ValueError:
+        return 6.0
+
+
+def _doubao_row_from_snapshot(snapshot: dict, now: dt.datetime | None = None) -> dict:
+    row = dict(snapshot["row"])
+    captured = dt.datetime.fromisoformat(snapshot["captured_at"])
+    now = now or dt.datetime.now().astimezone()
+    age_hours = max(0.0, (now.timestamp() - captured.timestamp()) / 3600)
+    row["stale"] = age_hours > _doubao_max_age_hours()
+    row["note"] = (
+        f"{row.get('note', '豆包官网可见 DOM')} · "
+        f"采集于 {captured.astimezone().strftime('%m-%d %H:%M')}"
+    )
+    if row["stale"]:
+        row["note"] += f" · 快照已过期（{age_hours:.1f} 小时）"
+    return row
+
+
+def _read_doubao_chrome_dom() -> str:
+    """读取已打开且已登录的 Chrome 额度页；不启动浏览器、不导航、不读存储。"""
+    if not DOUBAO_APPLESCRIPT.exists():
+        raise RuntimeError("豆包 Chrome 读取脚本缺失")
+    running = subprocess.run(
+        ["pgrep", "-x", "Google Chrome"], capture_output=True, timeout=3, check=False,
+    )
+    if running.returncode != 0:
+        raise RuntimeError("Chrome 未运行")
+    result = subprocess.run(
+        ["osascript", str(DOUBAO_APPLESCRIPT), DOUBAO_QUOTA_URL],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout).lower()
+        if "not authorized" in error or "-1743" in error:
+            raise RuntimeError("macOS 未授权自动化控制 Chrome")
+        if "javascript through apple events" in error or "apple events" in error:
+            raise RuntimeError("Chrome 未允许来自 Apple 事件的 JavaScript")
+        if "未找到" in error:
+            raise RuntimeError("Chrome 中未打开豆包额度管理页")
+        raise RuntimeError("Chrome DOM 读取失败")
+    text = result.stdout.strip()
+    if not text:
+        raise RuntimeError("豆包额度页 DOM 返回为空")
+    return text
+
+
+def _sync_doubao_chrome(
+    cache_path: Path = DOUBAO_QUOTA_CACHE,
+    captured_at: dt.datetime | None = None,
+) -> dict:
+    snapshot = _doubao_snapshot(_read_doubao_chrome_dom(), captured_at)
+    _write_doubao_snapshot(snapshot, cache_path)
+    return snapshot
+
+
+def _import_doubao_dom(
+    text: str,
+    cache_path: Path = DOUBAO_QUOTA_CACHE,
+    captured_at: dt.datetime | None = None,
+) -> dict:
+    snapshot = _doubao_snapshot(text, captured_at)
+    _write_doubao_snapshot(snapshot, cache_path)
+    return snapshot
+
+
+def _doubao_quota(label: str = "豆包 · 个人会员") -> dict:
+    """优先实时读取 Chrome DOM；失败时使用本地最小快照并标明新鲜度。"""
+    try:
+        return _doubao_row_from_snapshot(_sync_doubao_chrome())
+    except Exception:  # noqa: BLE001
+        snapshot = _read_doubao_snapshot()
+        if snapshot:
+            try:
+                return _doubao_row_from_snapshot(snapshot)
+            except Exception:  # noqa: BLE001
+                pass
+        return {
+            "name": label,
+            "status": "未同步官网 DOM（先打开额度页并运行 --sync-doubao-chrome）",
+        }
+
 
 def _kimi_quota(label: str, key: str | None) -> dict:
     if not key:
@@ -434,6 +660,7 @@ def collect() -> list[dict]:
     rows = [
         _kimi_quota("Kimi · 本人（948/年）", mine),
         _kimi_quota("Kimi · Andy（199/月）", andy),
+        _doubao_quota(),
         _codex_local("Codex · Mac"),
         _codex_win("Codex · Win"),
         _grok("Grok · SuperGrok"),
@@ -524,7 +751,7 @@ def _alerts(rows: list[dict]) -> list[dict]:
     now = dt.datetime.now()
     out: list[dict] = []
     for r in rows:
-        if r.get("status") != "ok":
+        if r.get("status") != "ok" or r.get("stale"):
             continue
         if "minimax" in (r.get("name") or "").lower():
             continue
@@ -555,6 +782,7 @@ def _alerts(rows: list[dict]) -> list[dict]:
                 out.append({
                     "name": r["name"],
                     "kind": "fiveh",
+                    "window_label": r.get("fiveh_label", "5h 窗"),
                     "remain": f_rem,
                     "when": fr,
                     "until": _fmt_until(fr, now),
@@ -568,7 +796,7 @@ def _alerts_text(alerts: list[dict]) -> list[str]:
         return []
     lines = ["# 快刷新 · 剩余额度抓紧用", ""]
     for a in alerts:
-        window = "周额度" if a["kind"] == "week" else "5h 窗"
+        window = "周额度" if a["kind"] == "week" else a.get("window_label", "5h 窗")
         lines.append(
             f"- **{a['name']}**：{window} {a['until']}刷新，还剩 {a['remain']:.0f}%"
         )
@@ -586,7 +814,8 @@ def _alerts_html(alerts: list[dict]) -> str:
         return ""
     items = "".join(
         f"<li><b>{_html_text(a['name'])}</b> · "
-        f"{'周额度' if a['kind']=='week' else '5h 窗'} {_html_text(a['until'])}刷新"
+        f"{_html_text('周额度' if a['kind']=='week' else a.get('window_label', '5h 窗'))} "
+        f"{_html_text(a['until'])}刷新"
         f"，还剩 {a['remain']:.0f}%，抓紧用</li>"
         for a in alerts
     )
@@ -613,7 +842,8 @@ def render(rows: list[dict]) -> str:
         s += rem_s
         s += f"，周重置 {r.get('reset', '?')}"
         if r.get("fiveh_text"):
-            s += f"，5h窗已用 {r['fiveh_text']}（重置 {r.get('fiveh_reset', '?')}）"
+            window_label = r.get("fiveh_label", "5h 窗")
+            s += f"，{window_label}已用 {r['fiveh_text']}（重置 {r.get('fiveh_reset', '?')}）"
         if r.get("note"):
             s += f"，{r['note']}"
         lines.append(s)
@@ -650,12 +880,16 @@ def _card(r: dict, alert: dict | None = None) -> str:
     if r.get("fiveh_text"):
         fp = r.get("fiveh_pct")
         fc = _color(fp)
-        fiveh = f"""<div class="sub">5h 窗</div>
+        window_label = _html_text(r.get("fiveh_label", "5h 窗"))
+        fiveh = f"""<div class="sub">{window_label}</div>
 <div class="bar small"><div class="fill" style="width:{fp or 0}%;background:{fc}"></div></div>
 <div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div>"""
     note = f"<div class='meta dim'>{_html_text(r['note'])}</div>" if r.get("note") else ""
     urgent = " urgent" if alert else ""
-    pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
+    if r.get("stale"):
+        pill = "<span class='pill stale'>快照过期</span>"
+    else:
+        pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
     return f"""<div class="card{urgent}"><div class="top"><span class="name">{name}</span>
 {pill}</div>
 <div class="pct" style="color:{c}">{pct_txt}</div>
@@ -1117,6 +1351,7 @@ table{{border-collapse:collapse;width:100%}} td{{border:1px solid #30363d;paddin
 .pill{{font-size:11px;padding:2px 8px;border-radius:99px}}
 .pill.ok{{background:rgba(63,185,80,.15);color:#3fb950}}
 .pill.bad{{background:rgba(248,81,73,.15);color:#f85149}}
+.pill.stale{{background:rgba(139,148,158,.18);color:#8b949e}}
 .pill.warn{{background:rgba(240,136,62,.18);color:#f0883e}}
 .card.urgent{{border-color:#f0883e}}
 .pct{{font-size:34px;font-weight:700;letter-spacing:-1px;margin:2px 0 4px}}
@@ -1285,7 +1520,37 @@ def main() -> int:
     ap.add_argument("--serve", action="store_true", help="启动本地服务，网页上可直接刷新查询")
     ap.add_argument("--port", type=int, default=8788)
     ap.add_argument("--public-html", type=str, default="", help="生成脱敏公开版页面到指定路径")
+    ap.add_argument(
+        "--sync-doubao-chrome",
+        action="store_true",
+        help="从已打开、已登录的 Chrome 豆包额度页读取可见 DOM 并更新本地快照",
+    )
+    ap.add_argument(
+        "--import-doubao-dom",
+        metavar="PATH",
+        help="从 PATH 导入豆包额度页可见文本；使用 - 从标准输入读取",
+    )
     args = ap.parse_args()
+    if args.sync_doubao_chrome:
+        try:
+            snapshot = _sync_doubao_chrome()
+        except Exception as exc:  # noqa: BLE001
+            print(f"豆包额度同步失败：{exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(_doubao_row_from_snapshot(snapshot), ensure_ascii=False, indent=1))
+        return 0
+    if args.import_doubao_dom:
+        try:
+            if args.import_doubao_dom == "-":
+                dom_text = sys.stdin.read()
+            else:
+                dom_text = Path(args.import_doubao_dom).read_text(encoding="utf-8")
+            snapshot = _import_doubao_dom(dom_text)
+        except Exception as exc:  # noqa: BLE001
+            print(f"豆包额度导入失败：{exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(_doubao_row_from_snapshot(snapshot), ensure_ascii=False, indent=1))
+        return 0
     if args.serve:
         serve(args.port)
         return 0
