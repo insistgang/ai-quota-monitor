@@ -12,6 +12,8 @@
 - “当前时段”的已用百分比和重置时间；
 - “近 7 天”的已用百分比和重置时间。
 
+套餐名称只接受“订阅与额度管理”标题紧邻的套餐字段；账号昵称等页面文本不会作为套餐名称缓存或发布。百分比必须位于 0–100，重置时间也必须是有效日期和时间，否则整次同步失败并回退到已有缓存。
+
 它不进入豆包客户端进程，不读取 Cookie、localStorage、登录 Token 或 Chrome 配置，也不点击和导航。原始 DOM 不落盘；缓存文件只含归一化字段，位于：
 
 `~/.cache/ai-quota-monitor/doubao-quota.json`
@@ -30,6 +32,8 @@ python3 quota_report.py --sync-doubao-chrome
 ```
 
 成功后会输出已归一化的 JSON，并更新本地缓存。普通的 `python3 quota_report.py`、`--json`、`--html` 和 `publish.sh` 都会把豆包作为一个额度源；采集时会优先刷新 Chrome DOM，失败则使用缓存并显示新鲜度。
+
+“允许来自 Apple 事件的 JavaScript”是 Chrome 的全局开发者选项，并非只对本脚本生效。只应给可信的本地自动化程序授予 Chrome 控制权限；不再使用自动同步时可以关闭该选项。
 
 ## Codex 或其他 Agent 接入
 

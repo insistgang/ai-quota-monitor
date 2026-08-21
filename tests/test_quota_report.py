@@ -82,6 +82,52 @@ class DoubaoDomTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "当前时段/近 7 天"):
             quota_report._parse_doubao_dom("豆包聊天页")
 
+    def test_account_name_ending_in_package_is_not_used_as_plan(self):
+        dom_text = self.DOM_TEXT.replace(
+            "账号昵称不应进入缓存\n标准套餐",
+            "隐私昵称套餐\n订阅与额度管理免费体验至1月1日\n其他导航文字\n标准套餐",
+        )
+
+        row = quota_report._parse_doubao_dom(dom_text)
+
+        self.assertEqual(row["name"], "豆包 · 标准套餐")
+        self.assertNotIn("隐私昵称", json.dumps(row, ensure_ascii=False))
+        self.assertIn("免费体验至9月16日", row["note"])
+        self.assertNotIn("免费体验至1月1日", row["note"])
+
+    def test_parser_rejects_percentage_above_one_hundred(self):
+        dom_text = self.DOM_TEXT.replace("已用 7%", "已用 120%")
+
+        with self.assertRaisesRegex(ValueError, "百分比超出范围"):
+            quota_report._parse_doubao_dom(dom_text)
+
+    def test_parser_rejects_invalid_absolute_reset_date(self):
+        dom_text = self.DOM_TEXT.replace(
+            "8月24日 21:55 重置",
+            "13月40日 99:99 重置",
+        )
+
+        with self.assertRaisesRegex(ValueError, "重置时间非法"):
+            quota_report._parse_doubao_dom(dom_text)
+
+    def test_parser_rejects_unbounded_relative_reset_date(self):
+        dom_text = self.DOM_TEXT.replace(
+            "2 小时 24 分钟后重置",
+            f"{10 ** 50} 天后重置",
+        )
+
+        with self.assertRaisesRegex(ValueError, "重置时间非法"):
+            quota_report._parse_doubao_dom(dom_text)
+
+    def test_cache_reader_rejects_out_of_range_normalized_values(self):
+        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT)
+        snapshot["row"]["used_pct"] = 120.0
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "doubao-quota.json"
+            cache_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+            self.assertIsNone(quota_report._read_doubao_snapshot(cache_path))
+
 
 class DailyDeltaTests(unittest.TestCase):
     def _daily_rows(self, snapshots, day="2026-08-20"):

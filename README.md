@@ -34,7 +34,7 @@ python3 quota_report.py --sync-doubao-chrome  # 单独验证/刷新豆包官网 
 [`https://www.doubao.com/member/quota-management`](https://www.doubao.com/member/quota-management)，
 然后在 Chrome 的“视图 → 开发者”中开启“允许来自 Apple 事件的 JavaScript”。采集器只查找这个已打开的标签页并读取额度区，不会导航、点击或读取 Cookie。详细流程及其他 Agent 的导入方式见 [豆包 DOM 接入说明](docs/doubao-dom-sync.md)。
 
-仪表盘长这样：每张卡 = 一个模型，大号百分比 + 进度条，按用量变色（🟢<50% / 🟡50-80% / 🟠80-95% / 🔴>95%），Kimi/Antigravity 附 5 小时窗子条。
+仪表盘长这样：每张卡 = 一个模型，大号百分比 + 进度条，按用量变色（🟢<50% / 🟡50-80% / 🟠80-95% / 🔴>95%），Kimi/Antigravity 附 5 小时窗子条，豆包附“当前时段”子条。
 
 ## 定时自动跑（macOS launchd）
 
@@ -44,7 +44,7 @@ cp examples/com.leo.quota-report.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 ```
 
-默认每天 **9:30–23:30 每小时一次**（共 15 次）。launchd 调用 `~/.local/bin/quota-publish`（不放在文稿目录，避免 macOS TCC 拦截），再进入仓库跑采集、写 CSV、刷 HTML、推公开页。电脑睡着错过会在唤醒后补跑。
+默认每天 **9:30–23:30 每小时一次**（共 15 次）。launchd 调用 `~/.local/bin/quota-publish`（不放在文稿目录，避免 macOS TCC 拦截），该入口只委托仓库内的 `publish.sh` 执行采集、写 CSV、刷新三个 HTML 页面并推送，避免两份发布逻辑漂移。电脑睡着错过会在唤醒后补跑。
 
 查询本身**不消耗对话/生成额度**：Kimi / MiniMax 走只读用量接口；豆包读取官网可见 DOM；Grok / Codex / Antigravity 只开隐藏 TUI 发 `/usage`、`/status` 截屏，不向模型发任务。
 
