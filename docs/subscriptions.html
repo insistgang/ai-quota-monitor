@@ -1,0 +1,151 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>订阅账单 · AI 额度监控 · 2026-08-21 16:11</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="quota-generated-at" content="2026-08-21 16:11">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+<style>
+*{box-sizing:border-box}
+body{background:#0d1117;color:#e6edf3;font-family:-apple-system,"PingFang SC",sans-serif;padding:28px;max-width:1080px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px} .ts{color:#8b949e;font-size:13px;margin-bottom:6px}
+h2{font-size:17px;margin:26px 0 8px}
+a{color:#58a6ff;text-decoration:none} a:hover{text-decoration:underline}
+.nav{position:sticky;top:10px;z-index:20;display:flex;gap:6px;width:max-content;max-width:100%;padding:5px;margin:0 0 20px;background:rgba(22,27,34,.94);border:1px solid #30363d;border-radius:11px;backdrop-filter:blur(12px)}
+.nav a{color:#8b949e;padding:7px 12px;border-radius:7px;font-size:13px;font-weight:600;white-space:nowrap}
+.nav a:hover{color:#e6edf3;text-decoration:none;background:#21262d}
+.nav a.active{color:#fff;background:#238636}
+.update-notice{position:fixed;right:18px;bottom:18px;z-index:30;background:#1f6feb;color:#fff;border-radius:10px;padding:10px 12px;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,.35)}
+.update-notice button{margin-left:8px;border:0;border-radius:6px;padding:5px 9px;background:#fff;color:#0969da;cursor:pointer;font-weight:600}
+[hidden]{display:none!important}
+table{border-collapse:collapse;width:100%} td{border:1px solid #30363d;padding:9px 12px;font-size:15px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.name{font-size:14px;font-weight:600}
+.pill{font-size:11px;padding:2px 8px;border-radius:99px}
+.pill.ok{background:rgba(63,185,80,.15);color:#3fb950}
+.pill.bad{background:rgba(248,81,73,.15);color:#f85149}
+.pill.warn{background:rgba(240,136,62,.18);color:#f0883e}
+.card.urgent{border-color:#f0883e}
+.pct{font-size:34px;font-weight:700;letter-spacing:-1px;margin:2px 0 4px}
+.remain{font-size:13px;color:#8b949e;margin-bottom:8px}
+.alertband{background:rgba(240,136,62,.1);border:1px solid rgba(240,136,62,.45);border-radius:10px;padding:12px 16px;margin:12px 0 18px}
+.alertband h3{margin:0 0 8px;font-size:15px;color:#f0883e}
+.alertband ul{margin:0;padding-left:18px}
+.alertband li{font-size:14px;margin:5px 0}
+.bar{height:8px;background:#21262d;border-radius:99px;overflow:hidden}
+.bar.small{height:5px;margin-top:4px}
+.fill{height:100%;border-radius:99px;transition:width .4s}
+.meta{font-size:13px;color:#c9d1d9;margin-top:8px}
+.meta.nonai{padding:6px 0;border-bottom:1px dashed #21262d}
+.card:hover,.scard:hover{border-color:#58a6ff}
+.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+.scard{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px 16px;transition:border-color .2s}
+.scard.mini{padding:10px 14px}
+.sname{font-size:14px;font-weight:600;margin-bottom:6px}
+.scost{font-size:19px;font-weight:700;color:#58a6ff;margin-bottom:6px}
+.smeta{font-size:13px;color:#8b949e}
+.cd{font-size:11px;padding:2px 8px;border-radius:99px;margin-left:6px;white-space:nowrap}
+.cd.green{background:rgba(63,185,80,.15);color:#3fb950}
+.cd.yellow{background:rgba(210,153,34,.15);color:#d29922}
+.cd.red{background:rgba(248,81,73,.15);color:#f85149}
+.totalband{background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);border-radius:10px;padding:10px 16px;font-size:15px;font-weight:600;margin-bottom:14px}
+table.ledger td{font-size:14px;padding:7px 12px}
+table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap}
+.meta.dim{color:#8b949e}
+.sub{font-size:11px;color:#8b949e;margin-top:12px}
+.msg{font-size:13px;color:#d29922}
+.hday{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px 16px;margin-bottom:10px}
+.hdate{font-size:13px;font-weight:600;color:#8b949e;margin-bottom:8px}
+.hrow{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:13px}
+.hrow.dim{color:#8b949e}
+.hname{width:170px;flex-shrink:0}
+.hbar{flex:1;height:10px;background:#21262d;border-radius:99px;overflow:hidden}
+.hfill{height:100%;background:#58a6ff;border-radius:99px}
+.hval{width:74px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0}
+.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-top:26px}
+.section-head h2{margin:0 0 8px}
+.more-link{font-size:13px;white-space:nowrap}
+.history-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:2px 0 12px}
+.range-switch{display:flex;gap:5px}
+.range-switch button,.source-filter select{border:1px solid #30363d;border-radius:7px;background:#161b22;color:#c9d1d9;padding:7px 10px;font-size:12px}
+.range-switch button{cursor:pointer}
+.range-switch button.active{background:#1f6feb;border-color:#1f6feb;color:#fff}
+.source-filter{display:flex;align-items:center;gap:7px;color:#8b949e;font-size:12px}
+@media(max-width:600px){
+  body{padding:18px 14px}
+  .nav{top:6px;width:100%;justify-content:space-between}
+  .nav a{padding:7px 9px}
+  .grid{grid-template-columns:1fr}
+  .section-head{align-items:flex-start}
+  .history-tools{align-items:stretch;flex-direction:column}
+  .source-filter select{flex:1}
+  .hrow{gap:7px}
+  .hname{width:112px}
+  .hval{width:66px}
+}
+</style></head><body>
+<nav class="nav" aria-label="页面导航"><a href="index.html">额度概览</a><a href="history.html">每日消耗</a><a href="subscriptions.html" class="active" aria-current="page">订阅账单</a></nav>
+<h1>💳 订阅账单</h1>
+<div class="ts">更新于 2026-08-21 16:11 · 公开快照 · 每小时自动更新 · 订阅、历史充值与非 AI 固定支出</div>
+<h2>💳 订阅 · 到期 · 续费</h2>
+<div class='totalband'>💰 本人 AI 固定支出约 270 元/月 · 含非 AI 合计约 310 元/月</div>
+<div class="sgrid"><div class="scard">
+<div class="sname">🤖 ChatGPT ×2 账号（Codex）</div>
+<div class="scost">合计 150 元/月（1800 元/年）</div>
+<div class="smeta">每月 3/22 日 </div>
+</div><div class="scard">
+<div class="sname">🌙 Kimi（本人账号）</div>
+<div class="scost">948 元/年</div>
+<div class="smeta">每月 2 日；2027-02-02 到期 <span class='cd green'>剩 165 天</span></div>
+</div><div class="scard">
+<div class="sname">🌙 Kimi（朋友 账号）</div>
+<div class="scost">朋友 付费，不计入本人支出</div>
+<div class="smeta">每月 17 日；2027-08-17 到期 <span class='cd green'>剩 361 天</span></div>
+</div><div class="scard">
+<div class="sname">🚀 Grok</div>
+<div class="scost">朋友 付费，不计入本人支出</div>
+<div class="smeta">2026-11-02 到期 <span class='cd green'>剩 73 天</span></div>
+</div><div class="scard">
+<div class="sname">♊ Gemini（Antigravity 账号）</div>
+<div class="scost">0 元</div>
+<div class="smeta">2027-01-25 到期 <span class='cd green'>剩 157 天</span></div>
+</div><div class="scard">
+<div class="sname">🎬 MiniMax</div>
+<div class="scost">490 元/年</div>
+<div class="smeta">2027-03-22 到期 <span class='cd green'>剩 213 天</span></div>
+</div><div class="scard">
+<div class="sname">🧠 智谱 ChatGLM</div>
+<div class="scost">0 元</div>
+<div class="smeta">2027-05-25 到期 <span class='cd green'>剩 277 天</span></div>
+</div><div class="scard">
+<div class="sname">🔀 中转平台（第三方）</div>
+<div class="scost">8 月初充 100 元，现余额 832 刀</div>
+<div class="smeta">余额耗尽为止 </div>
+</div><div class="scard">
+<div class="sname">🔍 DeepSeek</div>
+<div class="scost">充 10 元，现余额 9.7 元</div>
+<div class="smeta">消耗极低 </div>
+</div></div>
+<h2>📒 消费台账（历史充值）</h2>
+<table class="ledger"><tr><td>日期</td><td>项目</td><td>金额</td></tr><tr><td>2026-01-23</td><td>📦 Codex 日卡（闲鱼，3 元/日 10 刀 token）</td><td class='amt'>3 元</td></tr><tr><td>2026-02-02</td><td>🌙 Kimi Agent</td><td class='amt'>948 元</td></tr><tr><td>2026-02-12</td><td>🎭 Claude 充值</td><td class='amt'>150 元</td></tr><tr><td>2026-02-12</td><td>🔀 中转平台额度（1000 刀）</td><td class='amt'>200 元</td></tr><tr><td>2026-02-12</td><td>📦 微信云平台</td><td class='amt'>20 元</td></tr><tr><td>2026-02-12</td><td>📦 TikHub 爬虫额度</td><td class='amt'>35 元</td></tr><tr><td>2026-02-12</td><td>📦 桃源游戏体力</td><td class='amt'>18 元</td></tr><tr><td>2026-07-04</td><td>🎭 Claude Max</td><td class='amt'>500 元</td></tr></table>
+<h2>🧾 非 AI 固定订阅</h2>
+<div class="sgrid"><div class='scard mini'><div class='sname'>☁️ iCloud：21 元/月（252 元/年）</div></div><div class='scard mini'><div class='sname'>🎧 得到大脑会员：199 元/年 × 买 2 年送 1 年 + 活动再送 1 年，实付 398 元用 4 年（≈8.3 元/月），2029-05-03 到期</div></div><div class='scard mini'><div class='sname'>📚 微信读书：125 元/372 天（≈10.2 元/月），2027-08-02 到期</div></div><div class='scard mini'><div class='sname'>💾 百度网盘：会员 2026-10-25 到期，到期前评估是否续（当前仍在用，Codex 可直接读取网盘文件）</div></div><div class='scard mini'><div class='sname'>📺 视频会员：0 元——家庭手机卡会员活动已整好（2026-08-19 本人确认），白嫖一年</div></div></div>
+<div id="updateNotice" class="update-notice" data-current="2026-08-21 16:11" hidden>
+发现有新数据 <button type="button" id="reloadLatest">点击更新</button></div>
+<script>
+(()=>{
+  const notice=document.getElementById('updateNotice');
+  const current=notice.dataset.current;
+  async function checkLatest(){
+    try{
+      const response=await fetch('index.html',{cache:'no-store'});
+      const latest=new DOMParser().parseFromString(await response.text(),'text/html')
+        .querySelector('meta[name="quota-generated-at"]')?.content;
+      if(latest && latest!==current) notice.hidden=false;
+    }catch(_error){}
+  }
+  document.getElementById('reloadLatest').addEventListener('click',()=>location.reload());
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden) checkLatest();});
+  setInterval(checkLatest,15*60*1000);
+})();
+</script>
+</body></html>

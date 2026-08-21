@@ -909,13 +909,15 @@ def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
     return out
 
 
-def _history_html(public: bool) -> str:
+def _history_html(public: bool, days: int = 7, controls: bool = False,
+                  more_href: str = "") -> str:
     """每日消耗柱状图：按天分块，源按消耗降序，纯 CSS 横条。"""
-    days = _daily_deltas()
-    if not days:
+    history_days = _daily_deltas(days=days)
+    if not history_days:
         return ""
     blocks = []
-    for d, rows in days:
+    source_names: set[str] = set()
+    for day_index, (d, rows) in enumerate(history_days):
         shown = [r for r in rows if r["delta"] > 0.05]
         resets = [r for r in rows if r["reset"] and r["delta"] <= 0.05]
         lines = []
@@ -923,25 +925,119 @@ def _history_html(public: bool) -> str:
             mx = max(r["delta"] for r in shown)
             for r in sorted(shown, key=lambda x: -x["delta"]):
                 name = _HIST_PUBLIC.get(r["name"], r["name"]) if public else r["name"]
+                source_names.add(name)
                 w = max(3, round(r["delta"] / mx * 100))
                 tags = ("*" if r["partial"] else "") + (" ↺" if r["reset"] else "")
                 lines.append(
-                    f'<div class="hrow"><span class="hname">{_html_text(name)}</span>'
+                    f'<div class="hrow" data-source="{_html_text(name)}">'
+                    f'<span class="hname">{_html_text(name)}</span>'
                     f'<div class="hbar"><div class="hfill" style="width:{w}%"></div></div>'
                     f'<span class="hval">+{r["delta"]:g}%{tags}</span></div>')
         else:
             lines.append('<div class="hrow dim">当日未记录到消耗</div>')
         for r in resets:
             name = _HIST_PUBLIC.get(r["name"], r["name"]) if public else r["name"]
-            lines.append(f'<div class="hrow dim">{_html_text(name)} ↺ 周重置</div>')
-        blocks.append(f'<div class="hday"><div class="hdate">{_html_text(d[5:])}</div>{"".join(lines)}</div>')
-    return ('<h2>📊 每日消耗（周计数口径）</h2>' + "".join(blocks)
+            source_names.add(name)
+            lines.append(
+                f'<div class="hrow dim" data-source="{_html_text(name)}">'
+                f'{_html_text(name)} ↺ 周重置</div>')
+        blocks.append(
+            f'<div class="hday" data-day-index="{day_index}">'
+            f'<div class="hdate">{_html_text(d[5:])}</div>{"".join(lines)}</div>')
+
+    tools = ""
+    if controls:
+        options = "".join(
+            f'<option value="{_html_text(name)}">{_html_text(name)}</option>'
+            for name in sorted(source_names)
+        )
+        tools = f'''<div class="history-tools">
+<div class="range-switch" aria-label="历史范围">
+<button type="button" class="active" data-days="7">最近 7 天</button>
+<button type="button" data-days="30">最近 30 天</button>
+</div>
+<label class="source-filter">账号
+<select id="sourceFilter"><option value="">全部账号</option>{options}</select>
+</label></div>'''
+    more = (
+        f'<a class="more-link" href="{_html_text(more_href)}">查看 30 天完整记录 →</a>'
+        if more_href else ""
+    )
+    return ('<div class="section-head"><h2>📊 每日消耗（周计数口径）</h2>' + more + '</div>'
+            + tools + "".join(blocks)
             + '<div class="sub">普通日 = 当天末次快照 − 前一日末次快照；↺ 跨周重置日按重置前后分段相加；'
               '* 底账首日或快照中断后从当天首次快照起算；5h 窗不计；底账随快照积累逐日丰富</div>')
 
 
+def _nav_html(active: str) -> str:
+    links = (
+        ("overview", "index.html", "额度概览"),
+        ("history", "history.html", "每日消耗"),
+        ("subscriptions", "subscriptions.html", "订阅账单"),
+    )
+    items = []
+    for key, href, label in links:
+        current = ' class="active" aria-current="page"' if key == active else ""
+        items.append(f'<a href="{href}"{current}>{label}</a>')
+    return '<nav class="nav" aria-label="页面导航">' + "".join(items) + "</nav>"
+
+
+def _freshness_html(now: str) -> str:
+    """标签页长期打开时，仅提示有新版，不强制刷新打断阅读位置。"""
+    return f'''<div id="updateNotice" class="update-notice" data-current="{_html_text(now)}" hidden>
+发现有新数据 <button type="button" id="reloadLatest">点击更新</button></div>
+<script>
+(()=>{{
+  const notice=document.getElementById('updateNotice');
+  const current=notice.dataset.current;
+  async function checkLatest(){{
+    try{{
+      const response=await fetch('index.html',{{cache:'no-store'}});
+      const latest=new DOMParser().parseFromString(await response.text(),'text/html')
+        .querySelector('meta[name="quota-generated-at"]')?.content;
+      if(latest && latest!==current) notice.hidden=false;
+    }}catch(_error){{}}
+  }}
+  document.getElementById('reloadLatest').addEventListener('click',()=>location.reload());
+  document.addEventListener('visibilitychange',()=>{{if(!document.hidden) checkLatest();}});
+  setInterval(checkLatest,15*60*1000);
+}})();
+</script>'''
+
+
+def _history_filter_script() -> str:
+    return '''<script>
+(()=>{
+  const buttons=[...document.querySelectorAll('[data-days]')];
+  const source=document.getElementById('sourceFilter');
+  function applyFilters(){
+    const limit=Number(document.querySelector('[data-days].active')?.dataset.days || 7);
+    const selected=source?.value || '';
+    document.querySelectorAll('.hday').forEach(day=>{
+      const inRange=Number(day.dataset.dayIndex)<limit;
+      let hasVisibleRow=false;
+      day.querySelectorAll('.hrow').forEach(row=>{
+        const matches=!selected || row.dataset.source===selected;
+        row.hidden=!inRange || !matches;
+        if(!row.hidden) hasVisibleRow=true;
+      });
+      day.hidden=!inRange || !hasVisibleRow;
+    });
+  }
+  buttons.forEach(button=>button.addEventListener('click',()=>{
+    buttons.forEach(other=>other.classList.toggle('active',other===button));
+    applyFilters();
+  }));
+  source?.addEventListener('change',applyFilters);
+  applyFilters();
+})();
+</script>'''
+
+
 def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
-                public: bool = False) -> str:
+                public: bool = False, page: str = "all") -> str:
+    if page not in {"all", "overview", "history", "subscriptions"}:
+        raise ValueError(f"unknown dashboard page: {page}")
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     rows = _sort_rows(list(rows))
     if public:
@@ -965,14 +1061,54 @@ async function poll(){
   }catch(e){setTimeout(poll,3000);}
 }
 </script>""" if live else ""
+
+    if page == "overview":
+        heading = "🤖 AI 额度监控"
+        title = "AI 额度监控"
+        detail = "卡片按周剩余从小到大"
+        content = (
+            f'{live_ui}<div class="grid">{cards}</div>{banner}'
+            f'{_history_html(public, days=2, more_href="history.html")}'
+        )
+    elif page == "history":
+        heading = "📊 每日消耗"
+        title = "每日消耗 · AI 额度监控"
+        detail = "默认最近 7 天，可切换 30 天并按账号筛选"
+        content = _history_html(public, days=30, controls=True) + _history_filter_script()
+    elif page == "subscriptions":
+        heading = "💳 订阅账单"
+        title = "订阅账单 · AI 额度监控"
+        detail = "订阅、历史充值与非 AI 固定支出"
+        content = _subs_html(public)
+    else:
+        heading = "🤖 AI 额度监控"
+        title = "AI 额度监控"
+        detail = "卡片按周剩余从小到大"
+        content = (
+            f'{live_ui}<div class="grid">{cards}</div>{banner}'
+            f'{_history_html(public)}{_subs_html(public)}'
+        )
+
+    split_site = page != "all"
+    navigation = _nav_html(page) if split_site else ""
+    freshness = _freshness_html(now) if split_site else ""
     html = f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<title>AI 额度监控 · {now}</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} · {now}</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="quota-generated-at" content="{now}">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
 *{{box-sizing:border-box}}
 body{{background:#0d1117;color:#e6edf3;font-family:-apple-system,"PingFang SC",sans-serif;padding:28px;max-width:1080px;margin:0 auto}}
 h1{{font-size:22px;margin:0 0 4px}} .ts{{color:#8b949e;font-size:13px;margin-bottom:6px}}
 h2{{font-size:17px;margin:26px 0 8px}}
+a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
+.nav{{position:sticky;top:10px;z-index:20;display:flex;gap:6px;width:max-content;max-width:100%;padding:5px;margin:0 0 20px;background:rgba(22,27,34,.94);border:1px solid #30363d;border-radius:11px;backdrop-filter:blur(12px)}}
+.nav a{{color:#8b949e;padding:7px 12px;border-radius:7px;font-size:13px;font-weight:600;white-space:nowrap}}
+.nav a:hover{{color:#e6edf3;text-decoration:none;background:#21262d}}
+.nav a.active{{color:#fff;background:#238636}}
+.update-notice{{position:fixed;right:18px;bottom:18px;z-index:30;background:#1f6feb;color:#fff;border-radius:10px;padding:10px 12px;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,.35)}}
+.update-notice button{{margin-left:8px;border:0;border-radius:6px;padding:5px 9px;background:#fff;color:#0969da;cursor:pointer;font-weight:600}}
+[hidden]{{display:none!important}}
 table{{border-collapse:collapse;width:100%}} td{{border:1px solid #30363d;padding:9px 12px;font-size:15px}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}}
 .card{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px}}
@@ -1019,18 +1155,49 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap}}
 .hbar{{flex:1;height:10px;background:#21262d;border-radius:99px;overflow:hidden}}
 .hfill{{height:100%;background:#58a6ff;border-radius:99px}}
 .hval{{width:74px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0}}
+.section-head{{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-top:26px}}
+.section-head h2{{margin:0 0 8px}}
+.more-link{{font-size:13px;white-space:nowrap}}
+.history-tools{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:2px 0 12px}}
+.range-switch{{display:flex;gap:5px}}
+.range-switch button,.source-filter select{{border:1px solid #30363d;border-radius:7px;background:#161b22;color:#c9d1d9;padding:7px 10px;font-size:12px}}
+.range-switch button{{cursor:pointer}}
+.range-switch button.active{{background:#1f6feb;border-color:#1f6feb;color:#fff}}
+.source-filter{{display:flex;align-items:center;gap:7px;color:#8b949e;font-size:12px}}
+@media(max-width:600px){{
+  body{{padding:18px 14px}}
+  .nav{{top:6px;width:100%;justify-content:space-between}}
+  .nav a{{padding:7px 9px}}
+  .grid{{grid-template-columns:1fr}}
+  .section-head{{align-items:flex-start}}
+  .history-tools{{align-items:stretch;flex-direction:column}}
+  .source-filter select{{flex:1}}
+  .hrow{{gap:7px}}
+  .hname{{width:112px}}
+  .hval{{width:66px}}
+}}
 </style></head><body>
-<h1>🤖 AI 额度监控</h1>
-<div class="ts">更新于 {now} · {"公开快照 · 每日自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · 卡片按周剩余从小到大</div>
-{live_ui}
-<div class="grid">{cards}</div>
-{banner}
-{_history_html(public)}
-{_subs_html(public)}
+{navigation}
+<h1>{heading}</h1>
+<div class="ts">更新于 {now} · {"公开快照 · 每小时自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · {detail}</div>
+{content}
+{freshness}
 </body></html>"""
     if path is not None:
         path.write_text(html, encoding="utf-8")
     return html
+
+
+def render_public_site(rows: list[dict], index_path: Path) -> None:
+    """生成 GitHub Pages 的概览、每日消耗和订阅账单三个静态页面。"""
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    pages = {
+        "overview": index_path,
+        "history": index_path.with_name("history.html"),
+        "subscriptions": index_path.with_name("subscriptions.html"),
+    }
+    for page, path in pages.items():
+        render_html(rows, path, public=True, page=page)
 
 
 # ---------- 本地服务模式 ----------
@@ -1131,9 +1298,8 @@ def main() -> int:
         print(f"dashboard: {out}")
     if args.public_html:
         p = Path(args.public_html)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        render_html(rows, p, public=True)
-        print(f"public: {p}")
+        render_public_site(rows, p)
+        print(f"public: {p}, {p.with_name('history.html')}, {p.with_name('subscriptions.html')}")
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=1))
     else:

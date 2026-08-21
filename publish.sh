@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 
 python3 quota_report.py --log --html --public-html docs/index.html || exit 1
 
-git add docs/index.html
+git add -- docs/index.html docs/history.html docs/subscriptions.html
 if ! git diff --cached --quiet; then
   git commit -q -m "chore: 每日额度快照 $(date +%F_%H%M)"
   GIT_TERMINAL_PROMPT=0 git push https://github.com/insistgang/ai-quota-monitor.git main

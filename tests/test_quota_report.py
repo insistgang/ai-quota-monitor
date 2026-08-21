@@ -211,5 +211,71 @@ class HtmlEscapingTests(unittest.TestCase):
         self.assertIn("08&lt;x&gt;", rendered)
 
 
+class PageSplitTests(unittest.TestCase):
+    def test_public_site_splits_overview_history_and_subscriptions(self):
+        snapshots = []
+        for day, start, end in (
+            ("2026-08-18", 10, 15),
+            ("2026-08-19", 15, 22),
+            ("2026-08-20", 22, 31),
+        ):
+            snapshots.extend([
+                [f"{day}T09:31:00", "Kimi · 本人", "ok", str(start), f"{start}%", "08-24 01:18", ""],
+                [f"{day}T20:31:00", "Kimi · 本人", "ok", str(end), f"{end}%", "08-24 01:18", ""],
+            ])
+
+        finance = {
+            "subs": [{"name": "Kimi", "cost": "99 元/月", "renewal": "每月 2 日"}],
+            "ledger": [{"date": "2026-08-01", "item": "测试充值", "amount": "10 元"}],
+            "non_ai": ["iCloud：6 元/月"],
+            "total_ai": "99 元/月",
+            "total_all": "105 元/月",
+        }
+        quota_rows = [{
+            "name": "Kimi · 本人（948/年）",
+            "status": "ok",
+            "used_pct": 31.0,
+            "used_text": "31/100",
+            "reset": "08-24 01:18",
+        }]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_path = root / "quota-log.csv"
+            with log_path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(CSV_HEADER)
+                writer.writerows(snapshots)
+            with (
+                mock.patch.object(quota_report, "LOG_CSV", log_path),
+                mock.patch.object(quota_report, "_load_finance", return_value=finance),
+            ):
+                quota_report.render_public_site(quota_rows, root / "index.html")
+
+            overview = (root / "index.html").read_text(encoding="utf-8")
+            history = (root / "history.html").read_text(encoding="utf-8")
+            subscriptions = (root / "subscriptions.html").read_text(encoding="utf-8")
+
+        for page in (overview, history, subscriptions):
+            self.assertIn('href="index.html"', page)
+            self.assertIn('href="history.html"', page)
+            self.assertIn('href="subscriptions.html"', page)
+            self.assertIn("有新数据", page)
+
+        self.assertIn("08-20", overview)
+        self.assertIn("08-19", overview)
+        self.assertNotIn("08-18", overview)
+        self.assertNotIn("消费台账", overview)
+
+        self.assertIn("08-18", history)
+        self.assertIn('data-days="7"', history)
+        self.assertIn('data-days="30"', history)
+        self.assertIn('id="sourceFilter"', history)
+
+        self.assertIn("消费台账", subscriptions)
+        self.assertIn("iCloud：6 元/月", subscriptions)
+        self.assertNotIn("每日消耗（周计数口径）", subscriptions)
+
+
 if __name__ == "__main__":
     unittest.main()
