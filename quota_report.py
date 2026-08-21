@@ -468,7 +468,11 @@ def _agy_parse_group(text: str, marker: str) -> dict | None:
     if marker not in text:
         return None
     seg = text.split(marker, 1)[1][:2000]
-    m_week = re.search(r"Weekly Limit Remaining\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*[\d.]+% remaining · Refreshes in ([^\n]+)", seg)
+    m_week = re.search(
+        r"Weekly Limit Remaining\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*"
+        r"(?:[\d.]+%\s+remaining\s*·\s*)?Refreshes in ([^\n]+)",
+        seg,
+    )
     m_5h = re.search(r"Five Hour Limit Remaining\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*[\d.]+% remaining · Refreshes in ([^\n]+)", seg)
     if not m_week:
         return None
