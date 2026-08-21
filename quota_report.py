@@ -275,7 +275,7 @@ def _doubao_row_from_snapshot(snapshot: dict, now: dt.datetime | None = None) ->
 
 
 def _read_doubao_chrome_dom() -> str:
-    """读取已打开且已登录的 Chrome 额度页；不启动浏览器、不导航、不读存储。"""
+    """刷新并读取已打开、已登录的 Chrome 额度页；不启动浏览器或读存储。"""
     if not DOUBAO_APPLESCRIPT.exists():
         raise RuntimeError("豆包 Chrome 读取脚本缺失")
     running = subprocess.run(
@@ -284,25 +284,49 @@ def _read_doubao_chrome_dom() -> str:
     if running.returncode != 0:
         raise RuntimeError("Chrome 未运行")
     result = subprocess.run(
-        ["osascript", str(DOUBAO_APPLESCRIPT), DOUBAO_QUOTA_URL],
+        ["osascript", str(DOUBAO_APPLESCRIPT), DOUBAO_QUOTA_URL, "refresh"],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=45,
         check=False,
     )
     if result.returncode != 0:
         error = (result.stderr or result.stdout).lower()
         if "not authorized" in error or "-1743" in error:
             raise RuntimeError("macOS 未授权自动化控制 Chrome")
-        if "javascript through apple events" in error or "apple events" in error:
+        if (
+            "javascript through apple events" in error
+            or "apple events" in error
+            or ("javascript" in error and "apple 事件" in error)
+            or ("applescript 执行 javascript" in error and "功能已关闭" in error)
+        ):
             raise RuntimeError("Chrome 未允许来自 Apple 事件的 JavaScript")
         if "未找到" in error:
             raise RuntimeError("Chrome 中未打开豆包额度管理页")
+        if "刷新后未加载" in error:
+            raise RuntimeError("豆包额度页刷新后未加载")
         raise RuntimeError("Chrome DOM 读取失败")
     text = result.stdout.strip()
     if not text:
         raise RuntimeError("豆包额度页 DOM 返回为空")
     return text
+
+
+def _doubao_public_sync_error(exc: Exception) -> str:
+    message = str(exc)
+    known_errors = (
+        "Chrome 未运行",
+        "Chrome 中未打开豆包额度管理页",
+        "Chrome 未允许来自 Apple 事件的 JavaScript",
+        "macOS 未授权自动化控制 Chrome",
+        "豆包额度页刷新后未加载",
+    )
+    for known in known_errors:
+        if known in message:
+            return known
+    if isinstance(exc, ValueError):
+        return "页面额度格式异常"
+    return "实时刷新异常"
 
 
 def _sync_doubao_chrome(
@@ -328,16 +352,21 @@ def _doubao_quota(label: str = "豆包 · 个人会员") -> dict:
     """优先实时读取 Chrome DOM；失败时使用本地最小快照并标明新鲜度。"""
     try:
         return _doubao_row_from_snapshot(_sync_doubao_chrome())
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        public_error = _doubao_public_sync_error(exc)
         snapshot = _read_doubao_snapshot()
         if snapshot:
             try:
-                return _doubao_row_from_snapshot(snapshot)
+                row = _doubao_row_from_snapshot(snapshot)
+                row["stale"] = True
+                row["cache_fallback"] = True
+                row["note"] += f" · 实时刷新失败，使用缓存：{public_error}"
+                return row
             except Exception:  # noqa: BLE001
                 pass
         return {
             "name": label,
-            "status": "未同步官网 DOM（先打开额度页并运行 --sync-doubao-chrome）",
+            "status": f"实时刷新失败：{public_error}；无可用缓存",
         }
 
 
@@ -938,7 +967,9 @@ def _card(r: dict, alert: dict | None = None) -> str:
 <div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div>"""
     note = f"<div class='meta dim'>{_html_text(r['note'])}</div>" if r.get("note") else ""
     urgent = " urgent" if alert else ""
-    if r.get("stale"):
+    if r.get("cache_fallback"):
+        pill = "<span class='pill stale'>使用缓存</span>"
+    elif r.get("stale"):
         pill = "<span class='pill stale'>快照过期</span>"
     else:
         pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
