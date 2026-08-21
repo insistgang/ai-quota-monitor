@@ -47,6 +47,22 @@ class DoubaoDomTests(unittest.TestCase):
         self.assertEqual(row["fiveh_label"], "当前时段")
         self.assertIn("免费体验至9月16日", row["note"])
 
+    def test_parse_visible_dom_treats_used_up_window_as_fully_used(self):
+        captured = dt.datetime(
+            2026, 8, 21, 23, 35,
+            tzinfo=dt.timezone(dt.timedelta(hours=8)),
+        )
+        dom_text = self.DOM_TEXT.replace("已用 <1%", "已用完").replace(
+            "2 小时 24 分钟后重置",
+            "47 分钟后重置",
+        )
+
+        row = quota_report._parse_doubao_dom(dom_text, captured)
+
+        self.assertEqual(row["fiveh_pct"], 100.0)
+        self.assertEqual(row["fiveh_text"], "100%")
+        self.assertEqual(row["fiveh_reset"], "08-22 00:22")
+
     def test_import_cache_contains_only_normalized_quota_fields(self):
         captured = dt.datetime(
             2026, 8, 21, 16, 40,

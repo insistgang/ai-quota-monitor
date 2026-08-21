@@ -72,7 +72,9 @@ def _fmt_epoch(ts) -> str:
 
 
 def _doubao_pct(line: str) -> tuple[float, str]:
-    """解析“已用 7%”或“已用 <1%”；小于号场景用上界绘制进度条。"""
+    """解析“已用 7%”“已用 <1%”或“已用完”；小于号场景用上界绘制进度条。"""
+    if line.strip() == "已用完":
+        return 100.0, "100%"
     m = re.search(r"已用\s*(<)?\s*(\d+(?:\.\d+)?)\s*%", line)
     if not m:
         raise ValueError("豆包额度百分比缺失")
