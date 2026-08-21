@@ -1,6 +1,7 @@
 import csv
 import datetime as dt
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -127,6 +128,72 @@ class DoubaoDomTests(unittest.TestCase):
             cache_path.write_text(json.dumps(snapshot), encoding="utf-8")
 
             self.assertIsNone(quota_report._read_doubao_snapshot(cache_path))
+
+    def test_chrome_reader_requests_a_page_refresh_before_reading_dom(self):
+        def fake_run(command, **kwargs):
+            if command[0] == "pgrep":
+                return subprocess.CompletedProcess(command, 0, stdout="123\n", stderr="")
+            if command[-1] == "refresh":
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=self.DOM_TEXT, stderr="",
+                )
+            return subprocess.CompletedProcess(
+                command, 1, stdout="", stderr="refresh mode missing",
+            )
+
+        with mock.patch.object(quota_report.subprocess, "run", side_effect=fake_run):
+            text = quota_report._read_doubao_chrome_dom()
+
+        self.assertIn("近 7 天", text)
+
+    def test_applescript_refreshes_the_matching_tab_and_waits_for_quota_dom(self):
+        source = quota_report.DOUBAO_APPLESCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("reload chromeTab", source)
+        self.assertIn("repeat with attempt", source)
+        self.assertLess(
+            source.index("reload chromeTab"),
+            source.index("execute chromeTab javascript jsCode"),
+        )
+
+    def test_chrome_reader_recognizes_chinese_javascript_permission_error(self):
+        permission_error = (
+            "通过 AppleScript 执行 JavaScript 的功能已关闭。"
+            "请允许 Apple 事件中的 JavaScript。"
+        )
+        results = [
+            subprocess.CompletedProcess(["pgrep"], 0, stdout="123\n", stderr=""),
+            subprocess.CompletedProcess(
+                ["osascript"], 1, stdout="", stderr=permission_error,
+            ),
+        ]
+
+        with mock.patch.object(quota_report.subprocess, "run", side_effect=results):
+            with self.assertRaisesRegex(RuntimeError, "未允许来自 Apple 事件"):
+                quota_report._read_doubao_chrome_dom()
+
+    def test_live_refresh_failure_marks_cache_as_non_realtime(self):
+        captured = dt.datetime.now().astimezone() - dt.timedelta(minutes=5)
+        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT, captured)
+
+        with (
+            mock.patch.object(
+                quota_report,
+                "_sync_doubao_chrome",
+                side_effect=RuntimeError("Chrome 中未打开豆包额度管理页"),
+            ),
+            mock.patch.object(quota_report, "_read_doubao_snapshot", return_value=snapshot),
+        ):
+            row = quota_report._doubao_quota()
+
+        self.assertTrue(row["stale"])
+        self.assertIn("实时刷新失败", row["note"])
+        self.assertIn("使用缓存", row["note"])
+        self.assertIn("Chrome 中未打开豆包额度管理页", row["note"])
+        self.assertIn(
+            "<span class='pill stale'>使用缓存</span>",
+            quota_report._card(row),
+        )
 
 
 class DailyDeltaTests(unittest.TestCase):
