@@ -73,9 +73,12 @@ def _fmt_epoch(ts) -> str:
 
 
 def _doubao_pct(line: str) -> tuple[float, str]:
-    """解析“已用 7%”“已用 <1%”或“已用完”；小于号场景用上界绘制进度条。"""
-    if line.strip() == "已用完":
+    """解析豆包已用百分比及“已用完/未消耗”状态。"""
+    state = line.strip()
+    if state == "已用完":
         return 100.0, "100%"
+    if state == "未消耗":
+        return 0.0, "0%"
     m = re.search(r"已用\s*(<)?\s*(\d+(?:\.\d+)?)\s*%", line)
     if not m:
         raise ValueError("豆包额度百分比缺失")
@@ -96,6 +99,8 @@ def _doubao_reset_value(month: int, day: int, hour: int, minute: int) -> str:
 
 def _doubao_reset(line: str, captured_at: dt.datetime) -> str:
     """把豆包的中文绝对/相对重置时间归一化为 MM-DD HH:MM。"""
+    if line.strip() == "开始使用后计时":
+        return "开始使用后计时"
     absolute = re.search(r"(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})\s*重置", line)
     if absolute:
         month, day, hour, minute = (int(x) for x in absolute.groups())
@@ -138,8 +143,14 @@ def _parse_doubao_dom(text: str, captured_at: dt.datetime | None = None) -> dict
 
     def usage_block(start: int, end: int) -> tuple[float, str, str]:
         block = lines[start + 1:end]
-        used_line = next((line for line in block if line.startswith("已用")), "")
-        reset_line = next((line for line in block if "重置" in line), "")
+        used_line = next((
+            line for line in block
+            if line.startswith("已用") or line == "未消耗"
+        ), "")
+        reset_line = next((
+            line for line in block
+            if "重置" in line or line == "开始使用后计时"
+        ), "")
         used_pct, used_text = _doubao_pct(used_line)
         return used_pct, used_text, _doubao_reset(reset_line, captured_at)
 
@@ -228,6 +239,10 @@ def _doubao_reset_text_is_valid(value: object) -> bool:
     return True
 
 
+def _doubao_fiveh_reset_text_is_valid(value: object) -> bool:
+    return value == "开始使用后计时" or _doubao_reset_text_is_valid(value)
+
+
 def _read_doubao_snapshot(cache_path: Path = DOUBAO_QUOTA_CACHE) -> dict | None:
     try:
         snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -247,7 +262,7 @@ def _read_doubao_snapshot(cache_path: Path = DOUBAO_QUOTA_CACHE) -> dict | None:
             or not _doubao_pct_value_is_valid(row.get("used_pct"))
             or not _doubao_pct_value_is_valid(row.get("fiveh_pct"))
             or not _doubao_reset_text_is_valid(row.get("reset"))
-            or not _doubao_reset_text_is_valid(row.get("fiveh_reset"))
+            or not _doubao_fiveh_reset_text_is_valid(row.get("fiveh_reset"))
         ):
             return None
         return snapshot
@@ -768,6 +783,13 @@ def _collect_batches_with_retries(
             if key in retry_keys:
                 results[key] = collector()
     return [row for key, _collector in batches for row in results[key]]
+
+
+def _unhealthy_rows(rows: list[dict]) -> list[dict]:
+    return [
+        row for row in rows
+        if row.get("status") != "ok" or row.get("stale")
+    ]
 
 
 def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
@@ -1642,6 +1664,12 @@ def main() -> int:
     ap.add_argument("--html", action="store_true", help="生成 quota-dashboard.html 仪表盘")
     ap.add_argument("--retry-failures", type=int, default=0, help="异常来源的额外重试次数")
     ap.add_argument("--retry-delay", type=float, default=15, help="异常来源重试前等待秒数")
+    ap.add_argument(
+        "--max-unhealthy",
+        type=int,
+        default=-1,
+        help="超过此异常/缓存来源数则取消写入；负数表示不限制",
+    )
     ap.add_argument("--serve", action="store_true", help="启动本地服务，网页上可直接刷新查询")
     ap.add_argument("--port", type=int, default=8788)
     ap.add_argument("--public-html", type=str, default="", help="生成脱敏公开版页面到指定路径")
@@ -1683,6 +1711,14 @@ def main() -> int:
         retry_attempts=max(0, args.retry_failures),
         retry_delay=max(0, args.retry_delay),
     )
+    unhealthy = _unhealthy_rows(rows)
+    if args.max_unhealthy >= 0 and len(unhealthy) > args.max_unhealthy:
+        names = "、".join(str(row.get("name") or "未知来源") for row in unhealthy)
+        print(
+            f"额度采集重试后仍有 {len(unhealthy)} 个异常/缓存来源，取消本次写入：{names}",
+            file=sys.stderr,
+        )
+        return 2
     if args.log:
         append_log(rows)
     if args.html:

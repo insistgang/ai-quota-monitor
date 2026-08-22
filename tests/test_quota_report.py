@@ -63,6 +63,31 @@ class DoubaoDomTests(unittest.TestCase):
         self.assertEqual(row["fiveh_text"], "100%")
         self.assertEqual(row["fiveh_reset"], "08-22 00:22")
 
+    def test_parse_visible_dom_treats_not_consumed_window_as_zero(self):
+        captured = dt.datetime(
+            2026, 8, 22, 15, 49,
+            tzinfo=dt.timezone(dt.timedelta(hours=8)),
+        )
+        dom_text = self.DOM_TEXT.replace("已用 <1%", "未消耗").replace(
+            "2 小时 24 分钟后重置",
+            "开始使用后计时",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "doubao-quota.json"
+            snapshot = quota_report._import_doubao_dom(
+                dom_text,
+                cache_path,
+                captured,
+            )
+            cached = quota_report._read_doubao_snapshot(cache_path)
+
+        row = snapshot["row"]
+        self.assertEqual(row["fiveh_pct"], 0.0)
+        self.assertEqual(row["fiveh_text"], "0%")
+        self.assertEqual(row["fiveh_reset"], "开始使用后计时")
+        self.assertIsNotNone(cached)
+
     def test_import_cache_contains_only_normalized_quota_fields(self):
         captured = dt.datetime(
             2026, 8, 21, 16, 40,
@@ -277,6 +302,35 @@ class CollectionRetryTests(unittest.TestCase):
         self.assertFalse(rows[2]["stale"])
         self.assertEqual(calls, {"stable": 1, "failed": 2, "cached": 2})
         sleep.assert_called_once_with(15)
+
+    def test_publish_health_gate_stops_before_writing_multiple_failures(self):
+        rows = [
+            {"name": "网络来源", "status": "查询失败"},
+            {"name": "缓存来源", "status": "ok", "stale": True},
+        ]
+        argv = [
+            "quota_report.py",
+            "--log",
+            "--html",
+            "--public-html",
+            "docs/index.html",
+            "--max-unhealthy",
+            "1",
+        ]
+
+        with (
+            mock.patch.object(quota_report.sys, "argv", argv),
+            mock.patch.object(quota_report, "collect", return_value=rows),
+            mock.patch.object(quota_report, "append_log") as append_log,
+            mock.patch.object(quota_report, "render_html") as render_html,
+            mock.patch.object(quota_report, "render_public_site") as render_public_site,
+        ):
+            result = quota_report.main()
+
+        self.assertEqual(result, 2)
+        append_log.assert_not_called()
+        render_html.assert_not_called()
+        render_public_site.assert_not_called()
 
 
 class DailyDeltaTests(unittest.TestCase):

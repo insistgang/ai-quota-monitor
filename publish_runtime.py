@@ -20,6 +20,7 @@ PUBLIC_PAGES = (
 PUSH_REMOTE = "https://github.com/insistgang/ai-quota-monitor.git"
 COLLECT_RETRY_ATTEMPTS = 2
 COLLECT_RETRY_DELAY_SECONDS = 15
+MAX_UNHEALTHY_SOURCES = 1
 
 
 def _runtime_env() -> dict[str, str]:
@@ -87,6 +88,8 @@ def publish(
             str(COLLECT_RETRY_ATTEMPTS),
             "--retry-delay",
             str(COLLECT_RETRY_DELAY_SECONDS),
+            "--max-unhealthy",
+            str(MAX_UNHEALTHY_SOURCES),
         ),
         repo=repo,
         env=env,

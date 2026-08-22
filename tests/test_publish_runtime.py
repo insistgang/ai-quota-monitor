@@ -136,6 +136,8 @@ class PublishRuntimeTests(unittest.TestCase):
                     "2",
                     "--retry-delay",
                     "15",
+                    "--max-unhealthy",
+                    "1",
                 ],
             )
 
