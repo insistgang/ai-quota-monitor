@@ -242,6 +242,43 @@ CLAUDE AND GPT MODELS
         self.assertIn(f"重置 {rows[0]['reset']}", card)
 
 
+class CollectionRetryTests(unittest.TestCase):
+    def test_retries_only_failed_or_cached_source_batches(self):
+        calls = {"stable": 0, "failed": 0, "cached": 0}
+
+        def stable():
+            calls["stable"] += 1
+            return [{"name": "稳定来源", "status": "ok"}]
+
+        def failed_then_ok():
+            calls["failed"] += 1
+            if calls["failed"] == 1:
+                return [{"name": "瞬时失败来源", "status": "查询失败"}]
+            return [{"name": "瞬时失败来源", "status": "ok"}]
+
+        def cached_then_fresh():
+            calls["cached"] += 1
+            if calls["cached"] == 1:
+                return [{"name": "缓存来源", "status": "ok", "stale": True}]
+            return [{"name": "缓存来源", "status": "ok", "stale": False}]
+
+        with mock.patch.object(quota_report.time, "sleep") as sleep:
+            rows = quota_report._collect_batches_with_retries(
+                [
+                    ("stable", stable),
+                    ("failed", failed_then_ok),
+                    ("cached", cached_then_fresh),
+                ],
+                retry_attempts=2,
+                retry_delay=15,
+            )
+
+        self.assertEqual([row["status"] for row in rows], ["ok", "ok", "ok"])
+        self.assertFalse(rows[2]["stale"])
+        self.assertEqual(calls, {"stable": 1, "failed": 2, "cached": 2})
+        sleep.assert_called_once_with(15)
+
+
 class DailyDeltaTests(unittest.TestCase):
     def _daily_rows(self, snapshots, day="2026-08-20"):
         with tempfile.TemporaryDirectory() as tmp:

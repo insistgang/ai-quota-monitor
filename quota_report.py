@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 HOME = Path.home()
@@ -742,18 +743,50 @@ def _load_kimi_keys() -> tuple[str | None, str | None]:
     return mine, andy
 
 
-def collect() -> list[dict]:
+def _collect_batches_with_retries(
+    batches: list[tuple[str, Callable[[], list[dict]]]],
+    *,
+    retry_attempts: int = 0,
+    retry_delay: float = 0,
+) -> list[dict]:
+    """采集各来源；只重试异常或缓存回退的批次，成功批次保持原结果。"""
+    results = {key: collector() for key, collector in batches}
+    for _attempt in range(max(0, retry_attempts)):
+        retry_keys = {
+            key
+            for key, rows in results.items()
+            if not rows or any(
+                row.get("status") != "ok" or row.get("stale")
+                for row in rows
+            )
+        }
+        if not retry_keys:
+            break
+        if retry_delay > 0:
+            time.sleep(retry_delay)
+        for key, collector in batches:
+            if key in retry_keys:
+                results[key] = collector()
+    return [row for key, _collector in batches for row in results[key]]
+
+
+def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
     mine, andy = _load_kimi_keys()
-    rows = [
-        _kimi_quota("Kimi · 本人（948/年）", mine),
-        _kimi_quota("Kimi · Andy（199/月）", andy),
-        _doubao_quota(),
-        _codex_local("Codex · Mac"),
-        _codex_win("Codex · Win"),
-        _grok("Grok · SuperGrok"),
-        _minimax("MiniMax · Plus"),
-    ] + _agy()
-    return rows
+    batches = [
+        ("kimi_mine", lambda: [_kimi_quota("Kimi · 本人（948/年）", mine)]),
+        ("kimi_andy", lambda: [_kimi_quota("Kimi · Andy（199/月）", andy)]),
+        ("doubao", lambda: [_doubao_quota()]),
+        ("codex_local", lambda: [_codex_local("Codex · Mac")]),
+        ("codex_win", lambda: [_codex_win("Codex · Win")]),
+        ("grok", lambda: [_grok("Grok · SuperGrok")]),
+        ("minimax", lambda: [_minimax("MiniMax · Plus")]),
+        ("antigravity", _agy),
+    ]
+    return _collect_batches_with_retries(
+        batches,
+        retry_attempts=retry_attempts,
+        retry_delay=retry_delay,
+    )
 
 
 # ---------- 排序 / 刷新提醒 ----------
@@ -1607,6 +1640,8 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--log", action="store_true", help="追加快照到 quota-log.csv")
     ap.add_argument("--html", action="store_true", help="生成 quota-dashboard.html 仪表盘")
+    ap.add_argument("--retry-failures", type=int, default=0, help="异常来源的额外重试次数")
+    ap.add_argument("--retry-delay", type=float, default=15, help="异常来源重试前等待秒数")
     ap.add_argument("--serve", action="store_true", help="启动本地服务，网页上可直接刷新查询")
     ap.add_argument("--port", type=int, default=8788)
     ap.add_argument("--public-html", type=str, default="", help="生成脱敏公开版页面到指定路径")
@@ -1644,7 +1679,10 @@ def main() -> int:
     if args.serve:
         serve(args.port)
         return 0
-    rows = collect()
+    rows = collect(
+        retry_attempts=max(0, args.retry_failures),
+        retry_delay=max(0, args.retry_delay),
+    )
     if args.log:
         append_log(rows)
     if args.html:
