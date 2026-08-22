@@ -18,6 +18,8 @@ PUBLIC_PAGES = (
     "docs/subscriptions.html",
 )
 PUSH_REMOTE = "https://github.com/insistgang/ai-quota-monitor.git"
+COLLECT_RETRY_ATTEMPTS = 2
+COLLECT_RETRY_DELAY_SECONDS = 15
 
 
 def _runtime_env() -> dict[str, str]:
@@ -81,6 +83,10 @@ def publish(
             "--html",
             "--public-html",
             PUBLIC_PAGES[0],
+            "--retry-failures",
+            str(COLLECT_RETRY_ATTEMPTS),
+            "--retry-delay",
+            str(COLLECT_RETRY_DELAY_SECONDS),
         ),
         repo=repo,
         env=env,

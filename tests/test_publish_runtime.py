@@ -86,6 +86,8 @@ class PublishRuntimeTests(unittest.TestCase):
             (repo / "docs").mkdir()
             (repo / "quota_report.py").write_text(
                 "from pathlib import Path\n"
+                "import sys\n"
+                "Path('report-args.txt').write_text('\\n'.join(sys.argv[1:]), encoding='utf-8')\n"
                 "for name in ('index.html', 'history.html', 'subscriptions.html'):\n"
                 "    (Path('docs') / name).write_text(name, encoding='utf-8')\n",
                 encoding="utf-8",
@@ -122,6 +124,19 @@ class PublishRuntimeTests(unittest.TestCase):
             self.assertEqual(
                 _git(repo, "diff", "--cached", "--name-only").stdout.strip(),
                 "notes.txt",
+            )
+            self.assertEqual(
+                (repo / "report-args.txt").read_text(encoding="utf-8").splitlines(),
+                [
+                    "--log",
+                    "--html",
+                    "--public-html",
+                    "docs/index.html",
+                    "--retry-failures",
+                    "2",
+                    "--retry-delay",
+                    "15",
+                ],
             )
 
     def test_runtime_smoke_mode_is_read_only_and_returns_pass_marker(self):
