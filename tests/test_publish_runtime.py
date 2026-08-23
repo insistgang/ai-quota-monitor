@@ -1,6 +1,7 @@
 import datetime as dt
 import importlib.util
 import os
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHD_ENTRYPOINT = REPO_ROOT / "scripts" / "quota-publish-launchd.sh"
 RUNTIME_INSTALLER = REPO_ROOT / "scripts" / "install-launchd-runtime.sh"
+LAUNCHD_PLIST = REPO_ROOT / "examples" / "com.leo.quota-report.plist"
 PUBLISH_RUNTIME = REPO_ROOT / "publish_runtime.py"
 
 
@@ -34,6 +36,16 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 class LaunchdEntrypointTests(unittest.TestCase):
+    def test_plist_logs_are_written_under_a_tcc_safe_user_library_directory(self):
+        self.assertTrue(LAUNCHD_PLIST.is_file(), "缺少 launchd 配置模板")
+        config = plistlib.loads(LAUNCHD_PLIST.read_bytes())
+        expected_log_dir = Path("/Users/YOURNAME/Library/Logs/ai-quota-monitor")
+
+        for key in ("StandardOutPath", "StandardErrorPath"):
+            log_path = Path(config[key])
+            self.assertEqual(log_path.parent, expected_log_dir)
+            self.assertNotIn("/Documents/", log_path.as_posix())
+
     def test_entrypoint_delegates_to_python_without_opening_publish_shell_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             fake_repo = Path(tmp)
@@ -59,9 +71,13 @@ class LaunchdEntrypointTests(unittest.TestCase):
     def test_installer_copies_the_versioned_entrypoint_outside_documents(self):
         self.assertTrue(RUNTIME_INSTALLER.is_file(), "缺少 launchd 入口安装器")
         with tempfile.TemporaryDirectory() as tmp:
-            target_dir = Path(tmp) / "bin"
+            root = Path(tmp)
+            target_dir = root / "bin"
             env = os.environ.copy()
-            env["QUOTA_RUNTIME_BIN_DIR"] = str(target_dir)
+            env.update({
+                "HOME": str(root / "home"),
+                "QUOTA_RUNTIME_BIN_DIR": str(target_dir),
+            })
 
             result = subprocess.run(
                 ["/bin/bash", str(RUNTIME_INSTALLER)],
@@ -75,6 +91,31 @@ class LaunchdEntrypointTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(installed.read_bytes(), LAUNCHD_ENTRYPOINT.read_bytes())
             self.assertEqual(installed.stat().st_mode & 0o777, 0o755)
+
+    def test_installer_creates_default_log_directory_under_isolated_home(self):
+        self.assertTrue(RUNTIME_INSTALLER.is_file(), "缺少 launchd 入口安装器")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            target_dir = root / "bin"
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "QUOTA_RUNTIME_BIN_DIR": str(target_dir),
+            })
+
+            result = subprocess.run(
+                ["/bin/bash", str(RUNTIME_INSTALLER)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(
+                (home / "Library" / "Logs" / "ai-quota-monitor").is_dir()
+            )
 
 
 class PublishRuntimeTests(unittest.TestCase):
