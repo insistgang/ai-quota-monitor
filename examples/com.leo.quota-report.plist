@@ -45,9 +45,9 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/YOURNAME/ai-quota-monitor/launchd.stdout.log</string>
+  <string>/Users/YOURNAME/Library/Logs/ai-quota-monitor/launchd.stdout.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/YOURNAME/ai-quota-monitor/launchd.stderr.log</string>
+  <string>/Users/YOURNAME/Library/Logs/ai-quota-monitor/launchd.stderr.log</string>
 </dict>
 </plist>

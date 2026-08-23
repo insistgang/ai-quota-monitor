@@ -51,6 +51,8 @@ launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 
 默认每天 **9:30–23:30 每小时一次**（共 15 次）。launchd 调用 `~/.local/bin/quota-publish`（不放在文稿目录，避免 macOS TCC 拦截），再由 Python 打开仓库内唯一的 `publish_runtime.py`，执行采集、写 CSV、刷新三个 HTML 页面并推送。手动运行 `publish.sh` 也走同一个 Python 入口，因此没有两份发布逻辑。入口模板更新后重新执行安装命令即可。电脑睡着错过会在唤醒后补跑。
 
+launchd 的 stdout/stderr 默认写入 `~/Library/Logs/ai-quota-monitor/`；安装命令会预先创建该目录。入口和日志都不要放进 `Documents`，否则 Mac 重启后可能被 TCC/System Policy 在脚本启动前拦截。
+
 查询本身**不消耗对话/生成额度**：Kimi / MiniMax 走只读用量接口；豆包只刷新额度管理网页并读取可见 DOM；Grok / Codex / Antigravity 只开隐藏 TUI 发 `/usage`、`/status` 截屏，不向模型发任务。
 
 ## 依赖
