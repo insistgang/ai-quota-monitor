@@ -116,7 +116,9 @@ class DoubaoDomTests(unittest.TestCase):
             row = quota_report._doubao_row_from_snapshot(snapshot, now)
 
         self.assertTrue(row["stale"])
-        self.assertIn("快照已过期", row["note"])
+        self.assertIn("缓存 08-21 08:00", row["note"])
+        self.assertIn("过期7小时", row["note"])
+        self.assertNotIn("豆包官网可见 DOM", row["note"])
         self.assertEqual(quota_report._alerts([row]), [])
         self.assertIn("快照过期", quota_report._card(row))
 
@@ -228,12 +230,56 @@ class DoubaoDomTests(unittest.TestCase):
             row = quota_report._doubao_quota()
 
         self.assertTrue(row["stale"])
-        self.assertIn("实时刷新失败", row["note"])
-        self.assertIn("使用缓存", row["note"])
-        self.assertIn("Chrome 中未打开豆包额度管理页", row["note"])
+        self.assertIn("缓存 ", row["note"])
+        self.assertIn("未开额度页", row["note"])
+        self.assertNotIn("实时刷新失败", row["note"])
+        self.assertNotIn("Chrome 中未打开豆包额度管理页", row["note"])
+        self.assertNotIn("豆包官网可见 DOM", row["note"])
         self.assertIn(
             "<span class='pill stale'>使用缓存</span>",
             quota_report._card(row),
+        )
+
+    def test_cache_fallback_note_stays_compact(self):
+        captured = dt.datetime(
+            2026, 8, 22, 23, 30,
+            tzinfo=dt.timezone(dt.timedelta(hours=8)),
+        )
+        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT, captured)
+        now = captured + dt.timedelta(hours=14, minutes=18)
+
+        row = quota_report._doubao_row_from_snapshot(
+            snapshot,
+            now,
+            cache_fallback=True,
+            sync_error="Chrome 中未打开豆包额度管理页",
+        )
+
+        self.assertEqual(
+            row["note"],
+            "免费体验至9月16日 · 缓存 08-22 23:30 · 过期14小时 · 未开额度页",
+        )
+
+    def test_old_cache_note_drops_implementation_prefix(self):
+        captured = dt.datetime(
+            2026, 8, 22, 23, 30,
+            tzinfo=dt.timezone(dt.timedelta(hours=8)),
+        )
+        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT, captured)
+        snapshot["row"]["note"] = (
+            "豆包官网可见 DOM · 免费体验至9月16日 · 采集于 08-22 23:30"
+        )
+
+        row = quota_report._doubao_row_from_snapshot(
+            snapshot,
+            captured + dt.timedelta(hours=14, minutes=18),
+            cache_fallback=True,
+            sync_error="Chrome 中未打开豆包额度管理页",
+        )
+
+        self.assertEqual(
+            row["note"],
+            "免费体验至9月16日 · 缓存 08-22 23:30 · 过期14小时 · 未开额度页",
         )
 
 
@@ -597,6 +643,67 @@ class PageSplitTests(unittest.TestCase):
         self.assertIn("消费台账", subscriptions)
         self.assertIn("iCloud：6 元/月", subscriptions)
         self.assertNotIn("每日消耗（周计数口径）", subscriptions)
+
+
+class CodexWinLimitsTests(unittest.TestCase):
+    def _event(self, ts, *, primary=None, secondary=None, extra=None):
+        rl = {
+            "limit_id": "codex",
+            "primary": primary,
+            "secondary": secondary,
+            "plan_type": "plus",
+        }
+        if extra:
+            rl.update(extra)
+        return {
+            "timestamp": ts,
+            "type": "event_msg",
+            "payload": {"type": "token_count", "rate_limits": rl},
+        }
+
+    def test_find_rate_limits_skips_null_windows(self):
+        empty = self._event("2026-08-26T00:00:00Z", primary=None, secondary=None)
+        self.assertIsNone(quota_report._find_rate_limits(empty))
+
+    def test_row_uses_window_minutes_not_primary_name(self):
+        rl = {
+            "primary": {"used_percent": 94.0, "window_minutes": 300, "resets_at": 1787738592},
+            "secondary": {"used_percent": 30.0, "window_minutes": 10080, "resets_at": 1788271964},
+            "plan_type": "plus",
+        }
+        row = quota_report._codex_row("Codex · Win", rl)
+        self.assertEqual(row["used_pct"], 30.0)
+        self.assertEqual(row["fiveh_pct"], 94.0)
+        self.assertNotEqual(row["used_pct"], row["fiveh_pct"])
+
+    def test_five_hour_only_is_not_promoted_to_weekly(self):
+        rl = {
+            "primary": {"used_percent": 99.0, "window_minutes": 300, "resets_at": 1787700000},
+            "secondary": None,
+        }
+        row = quota_report._codex_row("Codex · Win", rl)
+        self.assertIsNone(row["used_pct"])
+        self.assertEqual(row["used_text"], "周窗未知")
+        self.assertEqual(row["fiveh_pct"], 99.0)
+
+    def test_pick_latest_ignores_stale_mtime_order(self):
+        stale = self._event(
+            "2026-08-25T19:20:22.150Z",
+            primary={"used_percent": 0.0, "window_minutes": 300, "resets_at": 1},
+            secondary={"used_percent": 16.0, "window_minutes": 10080, "resets_at": 2},
+        )
+        empty = self._event("2026-08-25T16:24:51.899Z", primary=None, secondary=None)
+        fresh = self._event(
+            "2026-08-26T05:27:56.910Z",
+            primary={"used_percent": 94.0, "window_minutes": 300, "resets_at": 3},
+            secondary={"used_percent": 30.0, "window_minutes": 10080, "resets_at": 4},
+        )
+        text = "\n".join(json.dumps(x) for x in (stale, empty, fresh))
+        rl, ts = quota_report._pick_latest_codex_limits(text)
+        self.assertEqual(ts, "2026-08-26T05:27:56.910Z")
+        row = quota_report._codex_row("Codex · Win", rl)
+        self.assertEqual(row["used_pct"], 30.0)
+        self.assertEqual(row["fiveh_pct"], 94.0)
 
 
 if __name__ == "__main__":
