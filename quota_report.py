@@ -6,7 +6,7 @@
 - Kimi（Andy 199/月）：KimiCodeBar credentials 里 alias=andy* 的 key
 - 豆包个人会员：已登录 Chrome 中官方额度页的可见 DOM
 - Codex（Mac）：最新 ~/.codex/sessions/**/rollout-*.jsonl 的 rate_limits
-- Codex（Win）：ssh desktop 读取对端最新 rollout 的 rate_limits
+- Codex（Win）：ssh desktop 读取对端会话里时间戳最新的 rate_limits（不靠 Windows 文件修改时间）
 - Grok（SuperGrok）：tmux 驱动本机 grok TUI 的 /usage 面板截屏解析
 
 用法：
@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import datetime as dt
 import html
@@ -175,9 +176,6 @@ def _parse_doubao_dom(text: str, captured_at: dt.datetime | None = None) -> dict
         if match:
             trial = match.group(1).replace(" ", "")
 
-    note_parts = ["豆包官网可见 DOM"]
-    if trial:
-        note_parts.append(trial)
     return {
         "name": f"豆包 · {plan}",
         "status": "ok",
@@ -188,7 +186,7 @@ def _parse_doubao_dom(text: str, captured_at: dt.datetime | None = None) -> dict
         "fiveh_text": current_text,
         "fiveh_reset": current_reset,
         "fiveh_label": "当前时段",
-        "note": " · ".join(note_parts),
+        "note": trial,
     }
 
 
@@ -277,18 +275,75 @@ def _doubao_max_age_hours() -> float:
         return 6.0
 
 
-def _doubao_row_from_snapshot(snapshot: dict, now: dt.datetime | None = None) -> dict:
+DOUBAO_SYNC_ERROR_SHORT = {
+    "Chrome 未运行": "Chrome未开",
+    "Chrome 中未打开豆包额度管理页": "未开额度页",
+    "Chrome 未允许来自 Apple 事件的 JavaScript": "需开Apple事件JS",
+    "macOS 未授权自动化控制 Chrome": "需授权自动化",
+    "豆包额度页刷新后未加载": "额度页未加载",
+    "页面额度格式异常": "页面格式异常",
+    "实时刷新异常": "刷新失败",
+}
+
+
+def _doubao_short_error(public_error: str) -> str:
+    return DOUBAO_SYNC_ERROR_SHORT.get(public_error, public_error)
+
+
+def _doubao_age_label(age_hours: float) -> str:
+    if age_hours < 1:
+        minutes = max(1, int(round(age_hours * 60)))
+        return f"过期{minutes}分钟"
+    if age_hours < 10:
+        value = round(age_hours, 1)
+        if value == int(value):
+            value = int(value)
+        return f"过期{value}小时"
+    return f"过期{int(round(age_hours))}小时"
+
+
+def _doubao_compose_note(
+    base_note: str = "",
+    *,
+    captured: dt.datetime,
+    stale: bool,
+    age_hours: float,
+    cache_fallback: bool = False,
+    sync_error: str | None = None,
+) -> str:
+    parts = [
+        part for part in (base_note or "").split(" · ")
+        if part.startswith("免费体验至")
+    ]
+    if cache_fallback or stale:
+        parts.append("缓存 " + captured.astimezone().strftime("%m-%d %H:%M"))
+        if stale:
+            parts.append(_doubao_age_label(age_hours))
+    if sync_error:
+        parts.append(_doubao_short_error(sync_error))
+    return " · ".join(parts)
+
+
+def _doubao_row_from_snapshot(
+    snapshot: dict,
+    now: dt.datetime | None = None,
+    *,
+    cache_fallback: bool = False,
+    sync_error: str | None = None,
+) -> dict:
     row = dict(snapshot["row"])
     captured = dt.datetime.fromisoformat(snapshot["captured_at"])
     now = now or dt.datetime.now().astimezone()
     age_hours = max(0.0, (now.timestamp() - captured.timestamp()) / 3600)
-    row["stale"] = age_hours > _doubao_max_age_hours()
-    row["note"] = (
-        f"{row.get('note', '豆包官网可见 DOM')} · "
-        f"采集于 {captured.astimezone().strftime('%m-%d %H:%M')}"
+    row["stale"] = cache_fallback or age_hours > _doubao_max_age_hours()
+    row["note"] = _doubao_compose_note(
+        row.get("note", ""),
+        captured=captured,
+        stale=row["stale"],
+        age_hours=age_hours,
+        cache_fallback=cache_fallback,
+        sync_error=sync_error,
     )
-    if row["stale"]:
-        row["note"] += f" · 快照已过期（{age_hours:.1f} 小时）"
     return row
 
 
@@ -375,16 +430,18 @@ def _doubao_quota(label: str = "豆包 · 个人会员") -> dict:
         snapshot = _read_doubao_snapshot()
         if snapshot:
             try:
-                row = _doubao_row_from_snapshot(snapshot)
-                row["stale"] = True
+                row = _doubao_row_from_snapshot(
+                    snapshot,
+                    cache_fallback=True,
+                    sync_error=public_error,
+                )
                 row["cache_fallback"] = True
-                row["note"] += f" · 实时刷新失败，使用缓存：{public_error}"
                 return row
             except Exception:  # noqa: BLE001
                 pass
         return {
             "name": label,
-            "status": f"实时刷新失败：{public_error}；无可用缓存",
+            "status": f"{_doubao_short_error(public_error)} · 无缓存",
         }
 
 
@@ -415,10 +472,20 @@ def _kimi_quota(label: str, key: str | None) -> dict:
         return {"name": label, "status": f"查询失败: {type(e).__name__}"}
 
 
+def _rate_window_usable(win) -> bool:
+    return isinstance(win, dict) and win.get("used_percent") is not None
+
+
+def _rate_limits_usable(rl) -> bool:
+    return isinstance(rl, dict) and (
+        _rate_window_usable(rl.get("primary")) or _rate_window_usable(rl.get("secondary"))
+    )
+
+
 def _find_rate_limits(o):
     if isinstance(o, dict):
         rl = o.get("rate_limits")
-        if isinstance(rl, dict) and "primary" in rl:
+        if _rate_limits_usable(rl):
             return rl
         for v in o.values():
             r = _find_rate_limits(v)
@@ -432,16 +499,72 @@ def _find_rate_limits(o):
     return None
 
 
+def _codex_event_ts(obj) -> str:
+    if not isinstance(obj, dict):
+        return ""
+    ts = obj.get("timestamp")
+    if isinstance(ts, str) and ts:
+        return ts
+    payload = obj.get("payload")
+    if isinstance(payload, dict):
+        ts = payload.get("timestamp")
+        if isinstance(ts, str) and ts:
+            return ts
+    return ""
+
+
+def _codex_windows(rl: dict) -> tuple[dict, dict]:
+    """按 window_minutes 区分周窗和 5h 窗，避免把 primary 的 5h 数据当成周额度。"""
+    week, fiveh = {}, {}
+    for key in ("secondary", "primary"):
+        win = rl.get(key)
+        if not _rate_window_usable(win):
+            continue
+        try:
+            minutes = int(win.get("window_minutes") or 0)
+        except (TypeError, ValueError):
+            minutes = 0
+        if minutes >= 24 * 60:
+            week = win
+        elif minutes and minutes <= 12 * 60:
+            fiveh = win
+    if not week and not fiveh:
+        named_week = rl.get("secondary") if _rate_window_usable(rl.get("secondary")) else {}
+        named_fiveh = rl.get("primary") if _rate_window_usable(rl.get("primary")) else {}
+        week, fiveh = named_week or {}, named_fiveh or {}
+    return week or {}, fiveh or {}
+
+
 def _codex_row(label: str, rl: dict, note: str = "") -> dict:
-    p = rl.get("primary", {})
-    return {
+    week, fiveh = _codex_windows(rl)
+    if not week and fiveh:
+        note = (note + " · " if note else "") + "仅5h窗数据"
+        row = {
+            "name": label,
+            "status": "ok",
+            "used_pct": None,
+            "used_text": "周窗未知",
+            "reset": "?",
+            "note": note,
+            "fiveh_text": f"{fiveh['used_percent']:g}%",
+            "fiveh_pct": fiveh["used_percent"],
+            "fiveh_reset": _fmt_epoch(fiveh.get("resets_at")),
+        }
+        return row
+    used = week.get("used_percent")
+    row = {
         "name": label,
         "status": "ok",
-        "used_pct": p.get("used_percent"),
-        "used_text": f"{p.get('used_percent')}%",
-        "reset": _fmt_epoch(p.get("resets_at")),
+        "used_pct": used,
+        "used_text": f"{used}%" if used is not None else "?",
+        "reset": _fmt_epoch(week.get("resets_at")),
         "note": note or (rl.get("plan_type") or ""),
     }
+    if fiveh.get("used_percent") is not None:
+        row["fiveh_text"] = f"{fiveh['used_percent']:g}%"
+        row["fiveh_pct"] = fiveh["used_percent"]
+        row["fiveh_reset"] = _fmt_epoch(fiveh.get("resets_at"))
+    return row
 
 
 def _tmux_slash_probe(cmd: str, slash: str, wait_boot: int = 12, wait_panel: int = 5,
@@ -560,9 +683,11 @@ def _codex_local(label: str) -> dict:
                                key=lambda p: p.stat().st_mtime)
                 for f in reversed(files[-5:]):
                     rl = _extract_rate_limits(f)
-                    if rl and rl.get("primary", {}).get("resets_at"):
-                        reset = _fmt_epoch(rl["primary"]["resets_at"])
-                        break
+                    if rl:
+                        win = rl.get("secondary") or rl.get("primary") or {}
+                        if win.get("resets_at"):
+                            reset = _fmt_epoch(win["resets_at"])
+                            break
             except Exception:  # noqa: BLE001
                 pass
             return {
@@ -607,31 +732,64 @@ def _extract_rate_limits(path: Path) -> dict | None:
     return last
 
 
+def _pick_latest_codex_limits(text: str) -> tuple[dict, str] | tuple[None, None]:
+    """从若干 jsonl 行里选出内容时间最新、且窗口数据完整的 rate_limits。"""
+    best_rl = None
+    best_ts = ""
+    for raw in text.splitlines():
+        raw = raw.strip()
+        if "rate_limits" not in raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            continue
+        rl = _find_rate_limits(obj)
+        if not rl:
+            continue
+        ts = _codex_event_ts(obj)
+        if best_rl is None or ts >= best_ts:
+            best_rl, best_ts = rl, ts
+    if not best_rl:
+        return None, None
+    return best_rl, best_ts
+
+
 def _codex_win(label: str) -> dict:
-    ps = (
-        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
-        "$f = Get-ChildItem -Path $env:USERPROFILE\\.codex\\sessions -Recurse -Filter *.jsonl "
-        "| Sort-Object LastWriteTime | Select-Object -Last 1; "
-        "$line = Select-String -Path $f.FullName -Pattern rate_limits | Select-Object -Last 1; "
-        "if ($line) { Write-Output $line.Line }"
+    # Windows 上长会话常保持文件句柄，LastWriteTime 不会跟着 append 更新。
+    # 因此同时按时间和体积取样，再按事件 timestamp 选最新额度。
+    ps_script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
+        "$dir = Join-Path $env:USERPROFILE '.codex\\sessions'\n"
+        "if (-not (Test-Path $dir)) { exit 0 }\n"
+        "$all = @(Get-ChildItem -Path $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue)\n"
+        "if (-not $all) { exit 0 }\n"
+        "$byTime = $all | Sort-Object LastWriteTime | Select-Object -Last 12\n"
+        "$bySize = $all | Sort-Object Length | Select-Object -Last 8\n"
+        "$files = @($byTime + $bySize | Sort-Object FullName -Unique)\n"
+        "foreach ($f in $files) {\n"
+        "    $lines = Select-String -Path $f.FullName -Pattern 'rate_limits' | Select-Object -Last 8\n"
+        "    foreach ($line in $lines) { Write-Output $line.Line }\n"
+        "}\n"
     )
+    encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
     try:
         out = subprocess.run(
             ["ssh", "-o", f"ConnectTimeout={SSH_TIMEOUT - 10}", "desktop",
-             "powershell", "-NoProfile", "-Command", ps],
-            capture_output=True, timeout=SSH_TIMEOUT, check=False,
+             "powershell", "-NoProfile", "-EncodedCommand", encoded],
+            capture_output=True, timeout=max(SSH_TIMEOUT, 40), check=False,
         )
-        text = out.stdout.decode("utf-8", errors="ignore")
+        stdout = out.stdout or b""
+        text = stdout.decode("utf-8", errors="ignore")
         if out.returncode != 0 or not text.strip():
             return {"name": label, "status": "ssh 无输出（台式机离线？）"}
-        for raw in reversed(text.strip().splitlines()):
-            try:
-                rl = _find_rate_limits(json.loads(raw))
-            except Exception:  # noqa: BLE001
-                continue
-            if rl:
-                return _codex_row(label, rl)
-        return {"name": label, "status": "对端会话无额度数据"}
+        rl, ts = _pick_latest_codex_limits(text)
+        if not rl:
+            return {"name": label, "status": "对端会话无额度数据"}
+        note = "远程会话"
+        if ts:
+            note += f" · 数据 {_fmt_utc(ts)}"
+        return _codex_row(label, rl, note=note)
     except Exception as e:  # noqa: BLE001
         return {"name": label, "status": f"ssh 失败: {type(e).__name__}"}
 
