@@ -49,7 +49,7 @@ flowchart LR
 | Codex · Win | SSH 读取远程机最新会话的 rate limit | 否 | 远程机和网络必须可达 |
 | Grok · SuperGrok（Mac） | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
 | Grok · Win | SSH 读取远程机 grok 日志中的 billing 快照 | 否 | 远程机、网络和 `~/.grok/logs/unified.jsonl` 必须可达 |
-| MiniMax | 官方 CLI 的 quota JSON | 否 | CLI 需要已登录 |
+| MiniMax | 官方 CLI 的 quota JSON | 否 | 当前暂停展示，采集函数保留 |
 | Antigravity | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
 
 所有适配器最终输出统一字段：来源名称、状态、周已用百分比、周重置时间，以及可选的短时窗口百分比和重置时间。动态文本进入 HTML 前统一转义。

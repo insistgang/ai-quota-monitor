@@ -1027,6 +1027,15 @@ def _unhealthy_rows(rows: list[dict]) -> list[dict]:
     ]
 
 
+def _quota_hidden(name: str | None) -> bool:
+    """暂时不展示的额度源；采集函数仍保留，便于以后打开。"""
+    return "minimax" in (name or "").lower()
+
+
+def _visible_quota_rows(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if not _quota_hidden(row.get("name"))]
+
+
 def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
     mine, andy = _load_kimi_keys()
     batches = [
@@ -1037,14 +1046,14 @@ def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
         ("codex_win", lambda: [_codex_win("Codex · Win")]),
         ("grok", lambda: [_grok("Grok · SuperGrok")]),
         ("grok_win", lambda: [_grok_win("Grok · Win")]),
-        ("minimax", lambda: [_minimax("MiniMax · Plus")]),
+        # MiniMax 先不展示，保留 _minimax() 便于以后打开
         ("antigravity", _agy),
     ]
-    return _collect_batches_with_retries(
+    return _visible_quota_rows(_collect_batches_with_retries(
         batches,
         retry_attempts=retry_attempts,
         retry_delay=retry_delay,
-    )
+    ))
 
 
 # ---------- 排序 / 刷新提醒 ----------
@@ -1131,7 +1140,7 @@ def _alerts(rows: list[dict]) -> list[dict]:
     for r in rows:
         if r.get("status") != "ok" or r.get("stale"):
             continue
-        if "minimax" in (r.get("name") or "").lower():
+        if _quota_hidden(r.get("name")):
             continue
         rem = _remain_pct(r)
         wr = _parse_reset(r.get("reset"))
@@ -1203,7 +1212,7 @@ def _alerts_html(alerts: list[dict]) -> str:
 # ---------- 输出 ----------
 
 def render(rows: list[dict]) -> str:
-    rows = _sort_rows(rows)
+    rows = _sort_rows(_visible_quota_rows(rows))
     alerts = _alerts(rows)
     lines = [f"# AI 额度快照 {dt.datetime.now().strftime('%Y-%m-%d %H:%M')} · 按周剩余从小到大", ""]
     for r in rows:
@@ -1479,6 +1488,8 @@ def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
             except ValueError:
                 continue
             name = r[1].split("（")[0].strip()  # 合并标签改名（如 Kimi 本人 99/月→948/年）
+            if _quota_hidden(name):
+                continue
             reset = r[5] if len(r) > 5 else ""
             per.setdefault((r[0][:10], name), []).append((r[0], pct, reset))
     dates = sorted({d for d, _ in per}, reverse=True)[:days]
@@ -1651,6 +1662,7 @@ def _history_filter_script() -> str:
 
 def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
                 public: bool = False, page: str = "all") -> str:
+    rows = _visible_quota_rows(rows)
     if page not in {"all", "overview", "history", "subscriptions"}:
         raise ValueError(f"unknown dashboard page: {page}")
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
