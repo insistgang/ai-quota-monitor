@@ -18,7 +18,8 @@
 | 豆包个人会员 | 每次先刷新已登录 Chrome 中的官方额度页，再读取**可见 DOM**；只缓存归一化后的额度数字 |
 | Codex（Mac） | tmux 驱动 `codex` TUI 的 `/status` 状态栏（实时）；重置时间用会话里的官方 `resets_at` |
 | Codex（Win / 远程机） | `ssh` 到远程机读取最新会话的 rate_limits |
-| Grok（SuperGrok） | tmux 驱动 `grok` TUI 的 `/usage` 面板截屏解析 |
+| Grok（SuperGrok / Mac） | tmux 驱动 `grok` TUI 的 `/usage` 面板截屏解析 |
+| Grok（Win / 远程机） | `ssh` 读取对端 `~/.grok/logs/unified.jsonl` 最新 billing 快照 |
 | MiniMax | `mmx quota show`（官方 CLI，JSON 输出） |
 | Antigravity（Gemini 组 / Claude·GPT 组） | tmux 驱动 `agy` TUI 的 `/usage` 面板截屏解析 |
 

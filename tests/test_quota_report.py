@@ -706,5 +706,50 @@ class CodexWinLimitsTests(unittest.TestCase):
         self.assertEqual(row["fiveh_pct"], 94.0)
 
 
+class GrokWinBillingTests(unittest.TestCase):
+    def test_parses_latest_billing_snapshot(self):
+        stale = json.dumps({
+            "ts": "2026-08-27T07:24:41.360Z",
+            "msg": "billing: fetched credits config",
+            "ctx": {
+                "subscriptionTier": "SuperGrok",
+                "config": {
+                    "creditUsagePercent": 30.0,
+                    "billingPeriodEnd": "2026-09-03T05:30:11.808008+00:00",
+                    "currentPeriod": {"end": "2026-09-03T05:30:11.808008+00:00"},
+                },
+            },
+        })
+        fresh = json.dumps({
+            "ts": "2026-08-27T07:31:00.146Z",
+            "msg": "billing: fetched credits config",
+            "ctx": {
+                "subscriptionTier": "SuperGrok",
+                "config": {
+                    "creditUsagePercent": 32.0,
+                    "billingPeriodEnd": "2026-09-03T05:30:11.808008+00:00",
+                    "currentPeriod": {"end": "2026-09-03T05:30:11.808008+00:00"},
+                },
+            },
+        })
+        row = quota_report._grok_row_from_billing_log(
+            "\n".join((stale, fresh)),
+            "Grok · Win",
+            note="远程日志",
+        )
+        self.assertEqual(row["used_pct"], 32.0)
+        self.assertEqual(row["used_text"], "32%")
+        self.assertEqual(row["reset"], "09-03 13:30")
+        self.assertIn("SuperGrok", row["note"])
+        self.assertIn("远程日志", row["note"])
+
+    def test_ignores_non_billing_lines(self):
+        row = quota_report._grok_row_from_billing_log(
+            '{"ts":"2026-08-27T07:31:00Z","msg":"session created"}\n',
+            "Grok · Win",
+        )
+        self.assertIsNone(row)
+
+
 if __name__ == "__main__":
     unittest.main()

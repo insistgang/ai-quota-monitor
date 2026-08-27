@@ -7,7 +7,8 @@
 - 豆包个人会员：已登录 Chrome 中官方额度页的可见 DOM
 - Codex（Mac）：最新 ~/.codex/sessions/**/rollout-*.jsonl 的 rate_limits
 - Codex（Win）：ssh desktop 读取对端会话里时间戳最新的 rate_limits（不靠 Windows 文件修改时间）
-- Grok（SuperGrok）：tmux 驱动本机 grok TUI 的 /usage 面板截屏解析
+- Grok（SuperGrok / Mac）：tmux 驱动本机 grok TUI 的 /usage 面板截屏解析
+- Grok（Win）：ssh desktop 读取对端 ~/.grok/logs/unified.jsonl 里最新 billing 快照
 
 用法：
   python3 quota_report.py            # 终端表格
@@ -831,6 +832,82 @@ def _grok(label: str) -> dict:
         subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True)
 
 
+def _grok_row_from_billing_log(text: str, label: str, *, note: str = "") -> dict | None:
+    """从 grok unified.jsonl 的 billing 行解析周已用百分比。"""
+    best = None
+    best_ts = ""
+    for raw in text.splitlines():
+        if "billing: fetched credits config" not in raw:
+            continue
+        start = raw.find("{")
+        if start < 0:
+            continue
+        try:
+            obj = json.loads(raw[start:])
+        except Exception:  # noqa: BLE001
+            continue
+        ctx = obj.get("ctx") if isinstance(obj, dict) else None
+        if not isinstance(ctx, dict):
+            continue
+        cfg = ctx.get("config") if isinstance(ctx.get("config"), dict) else {}
+        pct = cfg.get("creditUsagePercent")
+        if pct is None:
+            continue
+        ts = obj.get("ts") or ""
+        if best is None or str(ts) >= best_ts:
+            best = (cfg, ctx, pct)
+            best_ts = str(ts)
+    if not best:
+        return None
+    cfg, ctx, pct = best
+    period = cfg.get("currentPeriod") if isinstance(cfg.get("currentPeriod"), dict) else {}
+    end = cfg.get("billingPeriodEnd") or period.get("end")
+    tier = ctx.get("subscriptionTier") or ""
+    bits = [p for p in (tier, note) if p]
+    if best_ts:
+        bits.append(f"数据 {_fmt_utc(best_ts)}")
+    try:
+        used = float(pct)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "name": label,
+        "status": "ok",
+        "used_pct": used,
+        "used_text": f"{used:g}%",
+        "reset": _fmt_utc(end) if end else "?",
+        "note": " · ".join(bits),
+    }
+
+
+def _grok_win(label: str) -> dict:
+    """Win 端：SSH 读取 grok 日志里最近一次官方 billing 快照，不启动 TUI、不消耗对话额度。"""
+    ps_script = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
+        "$path = Join-Path $env:USERPROFILE '.grok\\logs\\unified.jsonl'\n"
+        "if (-not (Test-Path $path)) { exit 0 }\n"
+        "$hits = Select-String -Path $path -Pattern 'billing: fetched credits config' "
+        "| Select-Object -Last 8\n"
+        "foreach ($h in $hits) { Write-Output $h.Line }\n"
+    )
+    encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+    try:
+        out = subprocess.run(
+            ["ssh", "-o", f"ConnectTimeout={SSH_TIMEOUT - 10}", "desktop",
+             "powershell", "-NoProfile", "-EncodedCommand", encoded],
+            capture_output=True, timeout=max(SSH_TIMEOUT, 30), check=False,
+        )
+        text = (out.stdout or b"").decode("utf-8", errors="ignore")
+        if out.returncode != 0 or not text.strip():
+            return {"name": label, "status": "ssh 无输出（台式机离线？）"}
+        row = _grok_row_from_billing_log(text, label, note="远程日志")
+        if not row:
+            return {"name": label, "status": "对端日志无额度数据"}
+        return row
+    except Exception as e:  # noqa: BLE001
+        return {"name": label, "status": f"ssh 失败: {type(e).__name__}"}
+
+
 def _mmx_bin() -> str | None:
     if shutil.which("mmx"):
         return "mmx"
@@ -959,6 +1036,7 @@ def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
         ("codex_local", lambda: [_codex_local("Codex · Mac")]),
         ("codex_win", lambda: [_codex_win("Codex · Win")]),
         ("grok", lambda: [_grok("Grok · SuperGrok")]),
+        ("grok_win", lambda: [_grok_win("Grok · Win")]),
         ("minimax", lambda: [_minimax("MiniMax · Plus")]),
         ("antigravity", _agy),
     ]
