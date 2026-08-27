@@ -439,6 +439,17 @@ class DailyDeltaTests(unittest.TestCase):
         self.assertEqual(rows[0]["delta"], 5.0)
         self.assertTrue(rows[0]["partial"])
 
+    def test_minimax_is_hidden_from_daily_history(self):
+        rows = self._daily_rows([
+            ["2026-08-19T23:31:00", "MiniMax · Plus", "ok", "0", "0%", "08-31 00:00", ""],
+            ["2026-08-20T20:31:00", "MiniMax · Plus", "ok", "8", "8%", "08-31 00:00", ""],
+            ["2026-08-19T23:31:00", "Codex · Mac", "ok", "4", "4%", "09-01 22:18", ""],
+            ["2026-08-20T20:31:00", "Codex · Mac", "ok", "6", "6%", "09-01 22:18", ""],
+        ])
+        names = [row["name"] for row in rows]
+        self.assertIn("Codex · Mac", names)
+        self.assertTrue(all("minimax" not in name.lower() for name in names))
+
     def test_history_html_shows_consumption_on_a_reset_day(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "quota-log.csv"

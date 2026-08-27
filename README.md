@@ -20,7 +20,7 @@
 | Codex（Win / 远程机） | `ssh` 到远程机读取最新会话的 rate_limits |
 | Grok（SuperGrok / Mac） | tmux 驱动 `grok` TUI 的 `/usage` 面板截屏解析 |
 | Grok（Win / 远程机） | `ssh` 读取对端 `~/.grok/logs/unified.jsonl` 最新 billing 快照 |
-| MiniMax | `mmx quota show`（官方 CLI，JSON 输出） |
+| MiniMax（暂停展示） | `mmx quota show`（官方 CLI，JSON 输出）；采集函数保留，当前不进仪表盘 |
 | Antigravity（Gemini 组 / Claude·GPT 组） | tmux 驱动 `agy` TUI 的 `/usage` 面板截屏解析 |
 
 ## 用法
