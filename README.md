@@ -17,10 +17,9 @@
 | Kimi for Coding（双账号） | `api.kimi.com/coding/v1/usages` API 直连（key 从 KimiCodeBar 配置读取） |
 | 豆包个人会员 | 每次先刷新已登录 Chrome 中的官方额度页，再读取**可见 DOM**；只缓存归一化后的额度数字 |
 | Codex（Mac） | tmux 驱动 `codex` TUI 的 `/status` 状态栏（实时）；重置时间用会话里的官方 `resets_at` |
-| Codex（Win / 远程机） | `ssh` 到远程机读取最新会话的 rate_limits |
-| Grok（SuperGrok / Mac） | tmux 驱动 `grok` TUI 的 `/usage` 面板截屏解析 |
-| Grok（Win / 远程机） | `ssh` 读取对端 `~/.grok/logs/unified.jsonl` 最新 billing 快照 |
-| MiniMax（暂停展示） | `mmx quota show`（官方 CLI，JSON 输出）；采集函数保留，当前不进仪表盘 |
+| Codex（Win / 远程机） | `ssh` 到远程机读取最新会话的 rate_limits；**仅在连上校园网（SSID `sues`）时采集**，其他网络自动跳过 |
+| Grok（SuperGrok / Mac） | tmux 驱动 `grok` TUI 的 `/usage` 面板截屏解析（Win 端已退订，不再采集，历史底账也过滤） |
+| MiniMax | `mmx quota show`（官方 CLI，JSON 输出） |
 | Antigravity（Gemini 组 / Claude·GPT 组） | tmux 驱动 `agy` TUI 的 `/usage` 面板截屏解析 |
 
 ## 用法
@@ -62,7 +61,7 @@ launchd 的 stdout/stderr 默认写入 `~/Library/Logs/ai-quota-monitor/`；安�
 - 豆包：Chrome 已登录、额度管理页保持打开；自动同步需允许来自 Apple 事件的 JavaScript
 - `tmux`（Grok / Codex-Mac / Antigravity 的 TUI 探测）
 - 各工具的官方 CLI 已登录：`kimi`（经 KimiCodeBar）、`codex`、`grok`、`mmx`、`agy`
-- Codex 远程机：配置好免密 ssh（示例用 `ssh desktop`，可在脚本里改）
+- Codex 远程机：配置好免密 ssh（示例用 `ssh desktop`，可在脚本里改）；仅当本机 Wi-Fi 连上校园网时才会触发，SSID 默认为 `sues`，可用环境变量 `QUOTA_CAMPUS_SSID` 覆盖
 
 ## 隐私与安全
 

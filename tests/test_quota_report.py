@@ -439,16 +439,16 @@ class DailyDeltaTests(unittest.TestCase):
         self.assertEqual(rows[0]["delta"], 5.0)
         self.assertTrue(rows[0]["partial"])
 
-    def test_minimax_is_hidden_from_daily_history(self):
+    def test_grok_win_is_hidden_from_daily_history(self):
         rows = self._daily_rows([
-            ["2026-08-19T23:31:00", "MiniMax · Plus", "ok", "0", "0%", "08-31 00:00", ""],
-            ["2026-08-20T20:31:00", "MiniMax · Plus", "ok", "8", "8%", "08-31 00:00", ""],
+            ["2026-08-19T23:31:00", "Grok · Win", "ok", "0", "0%", "08-31 00:00", ""],
+            ["2026-08-20T20:31:00", "Grok · Win", "ok", "8", "8%", "08-31 00:00", ""],
             ["2026-08-19T23:31:00", "Codex · Mac", "ok", "4", "4%", "09-01 22:18", ""],
             ["2026-08-20T20:31:00", "Codex · Mac", "ok", "6", "6%", "09-01 22:18", ""],
         ])
         names = [row["name"] for row in rows]
         self.assertIn("Codex · Mac", names)
-        self.assertTrue(all("minimax" not in name.lower() for name in names))
+        self.assertTrue(all("grok · win" not in name.lower() for name in names))
 
     def test_history_html_shows_consumption_on_a_reset_day(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -760,6 +760,38 @@ class GrokWinBillingTests(unittest.TestCase):
             "Grok · Win",
         )
         self.assertIsNone(row)
+
+
+class CollectSourceTests(unittest.TestCase):
+    def _names(self, ssid):
+        def row(label):
+            return {"name": label, "status": "ok"}
+        with mock.patch.object(quota_report, "_current_wifi_ssid", return_value=ssid), \
+             mock.patch.object(quota_report, "_load_kimi_keys", return_value=(None, None)), \
+             mock.patch.object(quota_report, "_kimi_quota", side_effect=lambda label, key: row(label)), \
+             mock.patch.object(quota_report, "_doubao_quota", return_value=row("豆包")), \
+             mock.patch.object(quota_report, "_codex_local", return_value=row("Codex · Mac")), \
+             mock.patch.object(quota_report, "_codex_win", return_value=row("Codex · Win")), \
+             mock.patch.object(quota_report, "_grok", return_value=row("Grok · SuperGrok")), \
+             mock.patch.object(quota_report, "_minimax", return_value=row("MiniMax")), \
+             mock.patch.object(quota_report, "_agy", return_value=[row("Antigravity · Gemini 组")]):
+            return [r["name"] for r in quota_report.collect()]
+
+    def test_off_campus_shows_minimax_but_not_win(self):
+        names = self._names("home-wifi")
+        self.assertIn("MiniMax", names)
+        self.assertNotIn("Codex · Win", names)
+        self.assertNotIn("Grok · Win", names)
+
+    def test_offline_hides_win(self):
+        names = self._names(None)
+        self.assertNotIn("Codex · Win", names)
+        self.assertIn("MiniMax", names)
+
+    def test_on_campus_shows_codex_win(self):
+        names = self._names("sues")
+        self.assertIn("Codex · Win", names)
+        self.assertIn("MiniMax", names)
 
 
 if __name__ == "__main__":

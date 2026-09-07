@@ -46,11 +46,12 @@ flowchart LR
 | Kimi for Coding | 官方 usage API，只读已有使用量 | 否 | 依赖本地已配置的账号凭据 |
 | 豆包个人会员 | 刷新已登录的额度管理页，读取可见 DOM | 否 | Chrome、固定标签页和 Apple 事件 JavaScript 必须可用 |
 | Codex · Mac | 隐藏 tmux 会话读取 `/status`，并参考本地会话重置时间 | 否 | CLI 需要已登录 |
-| Codex · Win | SSH 读取远程机最新会话的 rate limit | 否 | 远程机和网络必须可达 |
+| Codex · Win | SSH 读取远程机最新会话的 rate limit；仅校园网（SSID `sues`）内采集 | 否 | 远程机和网络必须可达 |
 | Grok · SuperGrok（Mac） | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
-| Grok · Win | SSH 读取远程机 grok 日志中的 billing 快照 | 否 | 远程机、网络和 `~/.grok/logs/unified.jsonl` 必须可达 |
-| MiniMax | 官方 CLI 的 quota JSON | 否 | 当前暂停展示，采集函数保留 |
+| MiniMax | 官方 CLI 的 quota JSON | 否 | CLI 需要已登录 |
 | Antigravity | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
+
+Grok · Win 已退订，不再采集；历史底账中的 Grok · Win 记录也会在展示层过滤。
 
 所有适配器最终输出统一字段：来源名称、状态、周已用百分比、周重置时间，以及可选的短时窗口百分比和重置时间。动态文本进入 HTML 前统一转义。
 

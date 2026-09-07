@@ -5,10 +5,10 @@
 - Kimi（本人 99/月）：KimiCodeBar credentials 里 alias=Leo-usage 的 key
 - Kimi（Andy 199/月）：KimiCodeBar credentials 里 alias=andy* 的 key
 - 豆包个人会员：已登录 Chrome 中官方额度页的可见 DOM
-- Codex（Mac）：最新 ~/.codex/sessions/**/rollout-*.jsonl 的 rate_limits
-- Codex（Win）：ssh desktop 读取对端会话里时间戳最新的 rate_limits（不靠 Windows 文件修改时间）
-- Grok（SuperGrok / Mac）：tmux 驱动本机 grok TUI 的 /usage 面板截屏解析
-- Grok（Win）：ssh desktop 读取对端 ~/.grok/logs/unified.jsonl 里最新 billing 快照
+- Codex（Mac）：tmux 驱动本机 codex TUI 的 /status 状态栏（实时）
+- Codex（Win）：仅校园网内 ssh desktop 读取对端会话里时间戳最新的 rate_limits
+- Grok（SuperGrok / Mac）：tmux 驱动本机 grok TUI 的 /usage 面板截屏解析（Win 端已退订，不采集）
+- MiniMax：本机 mmx CLI 的 `mmx quota show`（JSON 输出）
 
 用法：
   python3 quota_report.py            # 终端表格
@@ -634,7 +634,7 @@ def _agy_parse_group(text: str, marker: str) -> dict | None:
 
 def _agy() -> list[dict]:
     """Antigravity：tmux 驱动 agy TUI /usage，面板含 GEMINI 与 CLAUDE/GPT 两组额度。"""
-    text = _tmux_slash_probe("agy", "/usage", wait_boot=10, wait_panel=6, pre_enter=True)
+    text = _tmux_slash_probe("agy", "/usage", wait_boot=10, wait_panel=8, pre_enter=True)
     if not text:
         return [{"name": "Antigravity（Gemini/Claude）", "status": "TUI 探测失败"}]
     g = _agy_parse_group(text, "GEMINI MODELS")
@@ -1028,12 +1028,38 @@ def _unhealthy_rows(rows: list[dict]) -> list[dict]:
 
 
 def _quota_hidden(name: str | None) -> bool:
-    """暂时不展示的额度源；采集函数仍保留，便于以后打开。"""
-    return "minimax" in (name or "").lower()
+    """不再展示的额度源（如已退订的 Grok Win），历史底账里一并过滤。"""
+    lowered = (name or "").lower()
+    return "grok" in lowered and "win" in lowered
 
 
 def _visible_quota_rows(rows: list[dict]) -> list[dict]:
     return [row for row in rows if not _quota_hidden(row.get("name"))]
+
+
+CAMPUS_SSID = os.environ.get("QUOTA_CAMPUS_SSID", "sues")
+
+
+def _current_wifi_ssid() -> str | None:
+    """当前 Wi-Fi 的 SSID；未连接或非 Wi-Fi 接口返回 None。"""
+    for iface in ("en0", "en1"):
+        try:
+            r = subprocess.run(
+                ["/usr/sbin/networksetup", "-getairportnetwork", iface],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        m = re.search(r"Current Wi-Fi Network:\s*(.+)", r.stdout or "")
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _on_campus_network() -> bool:
+    """只有连上校园网（默认 sues，可用 QUOTA_CAMPUS_SSID 覆盖）才采集 Win 远程机。"""
+    ssid = _current_wifi_ssid()
+    return ssid is not None and ssid.lower() == CAMPUS_SSID.lower()
 
 
 def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
@@ -1043,12 +1069,13 @@ def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
         ("kimi_andy", lambda: [_kimi_quota("Kimi · Andy（199/月）", andy)]),
         ("doubao", lambda: [_doubao_quota()]),
         ("codex_local", lambda: [_codex_local("Codex · Mac")]),
-        ("codex_win", lambda: [_codex_win("Codex · Win")]),
         ("grok", lambda: [_grok("Grok · SuperGrok")]),
-        ("grok_win", lambda: [_grok_win("Grok · Win")]),
-        # MiniMax 先不展示，保留 _minimax() 便于以后打开
+        ("minimax", lambda: [_minimax("MiniMax")]),
         ("antigravity", _agy),
     ]
+    # Grok Win 已退订，不再采集；Codex Win 只有校园网内才可达远程机
+    if _on_campus_network():
+        batches.append(("codex_win", lambda: [_codex_win("Codex · Win")]))
     return _visible_quota_rows(_collect_batches_with_retries(
         batches,
         retry_attempts=retry_attempts,
