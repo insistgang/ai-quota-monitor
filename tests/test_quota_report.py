@@ -677,9 +677,10 @@ class CodexWinLimitsTests(unittest.TestCase):
         self.assertIsNone(quota_report._find_rate_limits(empty))
 
     def test_row_uses_window_minutes_not_primary_name(self):
+        now = int(dt.datetime.now().timestamp())
         rl = {
-            "primary": {"used_percent": 94.0, "window_minutes": 300, "resets_at": 1787738592},
-            "secondary": {"used_percent": 30.0, "window_minutes": 10080, "resets_at": 1788271964},
+            "primary": {"used_percent": 94.0, "window_minutes": 300, "resets_at": now + 3600},
+            "secondary": {"used_percent": 30.0, "window_minutes": 10080, "resets_at": now + 7 * 86400},
             "plan_type": "plus",
         }
         row = quota_report._codex_row("Codex · Win", rl)
@@ -688,8 +689,9 @@ class CodexWinLimitsTests(unittest.TestCase):
         self.assertNotEqual(row["used_pct"], row["fiveh_pct"])
 
     def test_five_hour_only_is_not_promoted_to_weekly(self):
+        now = int(dt.datetime.now().timestamp())
         rl = {
-            "primary": {"used_percent": 99.0, "window_minutes": 300, "resets_at": 1787700000},
+            "primary": {"used_percent": 99.0, "window_minutes": 300, "resets_at": now + 3600},
             "secondary": None,
         }
         row = quota_report._codex_row("Codex · Win", rl)
@@ -697,17 +699,28 @@ class CodexWinLimitsTests(unittest.TestCase):
         self.assertEqual(row["used_text"], "周窗未知")
         self.assertEqual(row["fiveh_pct"], 99.0)
 
+    def test_expired_five_hour_window_is_dropped(self):
+        now = int(dt.datetime.now().timestamp())
+        rl = {
+            "primary": {"used_percent": 48.0, "window_minutes": 300, "resets_at": now - 3600},
+            "secondary": {"used_percent": 30.0, "window_minutes": 10080, "resets_at": now + 86400},
+        }
+        row = quota_report._codex_row("Codex · Mac", rl)
+        self.assertEqual(row["used_pct"], 30.0)
+        self.assertNotIn("fiveh_pct", row)
+
     def test_pick_latest_ignores_stale_mtime_order(self):
+        now = int(dt.datetime.now().timestamp())
         stale = self._event(
             "2026-08-25T19:20:22.150Z",
-            primary={"used_percent": 0.0, "window_minutes": 300, "resets_at": 1},
-            secondary={"used_percent": 16.0, "window_minutes": 10080, "resets_at": 2},
+            primary={"used_percent": 0.0, "window_minutes": 300, "resets_at": now + 3600},
+            secondary={"used_percent": 16.0, "window_minutes": 10080, "resets_at": now + 86400},
         )
         empty = self._event("2026-08-25T16:24:51.899Z", primary=None, secondary=None)
         fresh = self._event(
             "2026-08-26T05:27:56.910Z",
-            primary={"used_percent": 94.0, "window_minutes": 300, "resets_at": 3},
-            secondary={"used_percent": 30.0, "window_minutes": 10080, "resets_at": 4},
+            primary={"used_percent": 94.0, "window_minutes": 300, "resets_at": now + 7200},
+            secondary={"used_percent": 30.0, "window_minutes": 10080, "resets_at": now + 2 * 86400},
         )
         text = "\n".join(json.dumps(x) for x in (stale, empty, fresh))
         rl, ts = quota_report._pick_latest_codex_limits(text)

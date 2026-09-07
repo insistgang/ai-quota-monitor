@@ -536,8 +536,21 @@ def _codex_windows(rl: dict) -> tuple[dict, dict]:
     return week or {}, fiveh or {}
 
 
+def _fiveh_window_active(win: dict) -> bool:
+    """resets_at 已过期的 5h 窗是旧会话快照，继续展示会误导，直接丢弃。"""
+    resets = win.get("resets_at")
+    if resets is None:
+        return True
+    try:
+        return float(resets) > time.time()
+    except (TypeError, ValueError):
+        return True
+
+
 def _codex_row(label: str, rl: dict, note: str = "") -> dict:
     week, fiveh = _codex_windows(rl)
+    if fiveh and not _fiveh_window_active(fiveh):
+        fiveh = {}
     if not week and fiveh:
         note = (note + " · " if note else "") + "仅5h窗数据"
         row = {
@@ -690,7 +703,7 @@ def _codex_local(label: str) -> dict:
                     week_win, fiveh_win = _codex_windows(rl)
                     if week_win.get("resets_at"):
                         reset = _fmt_epoch(week_win["resets_at"])
-                    if fiveh_win.get("used_percent") is not None:
+                    if fiveh_win.get("used_percent") is not None and _fiveh_window_active(fiveh_win):
                         fiveh = fiveh_win
                     if week_win.get("resets_at") and fiveh:
                         break
