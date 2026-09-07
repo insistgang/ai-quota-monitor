@@ -677,21 +677,26 @@ def _codex_local(label: str) -> dict:
             left = float(m.group(1))
             m_model = re.search(r"› /status.*?(gpt[\w.\- ]+?) ·", text.replace("\n", " "))
             note = m_model.group(1).strip() if m_model else ""
-            # TUI 状态栏不带重置时刻；resets_at 来自 Codex 会话里的官方字段
+            # TUI 状态栏不带重置时刻和 5h 窗；两者都从 Codex 会话里的官方 rate_limits 补齐
             reset = "滚动周窗"
+            fiveh: dict = {}
             try:
                 files = sorted((HOME / ".codex/sessions").rglob("rollout-*.jsonl"),
                                key=lambda p: p.stat().st_mtime)
                 for f in reversed(files[-5:]):
                     rl = _extract_rate_limits(f)
-                    if rl:
-                        win = rl.get("secondary") or rl.get("primary") or {}
-                        if win.get("resets_at"):
-                            reset = _fmt_epoch(win["resets_at"])
-                            break
+                    if not rl:
+                        continue
+                    week_win, fiveh_win = _codex_windows(rl)
+                    if week_win.get("resets_at"):
+                        reset = _fmt_epoch(week_win["resets_at"])
+                    if fiveh_win.get("used_percent") is not None:
+                        fiveh = fiveh_win
+                    if week_win.get("resets_at") and fiveh:
+                        break
             except Exception:  # noqa: BLE001
                 pass
-            return {
+            row = {
                 "name": label,
                 "status": "ok",
                 "used_pct": round(100 - left, 1),
@@ -699,6 +704,11 @@ def _codex_local(label: str) -> dict:
                 "reset": reset,
                 "note": (note + " · 实时" if note else "实时"),
             }
+            if fiveh:
+                row["fiveh_pct"] = fiveh["used_percent"]
+                row["fiveh_text"] = f"{fiveh['used_percent']:g}%"
+                row["fiveh_reset"] = _fmt_epoch(fiveh.get("resets_at"))
+            return row
     # 回退：会话文件
     root = HOME / ".codex" / "sessions"
     try:
