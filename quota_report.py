@@ -1208,6 +1208,9 @@ def _alerts(rows: list[dict]) -> list[dict]:
                 hit_week = True
         if hit_week:
             continue
+        # 周额度已用完时，5h 窗剩余同样无法使用，不再提示抓紧用。
+        if rem is not None and rem <= 3:
+            continue
         # Kimi 的 5h 窗只限制短时吞吐，不代表周额度即将过期；提醒只看周重置。
         if "kimi" in (r.get("name") or "").lower():
             continue
@@ -1328,7 +1331,10 @@ def _card(r: dict, alert: dict | None = None) -> str:
     elif r.get("stale"):
         pill = "<span class='pill stale'>快照过期</span>"
     else:
-        pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
+        if rem is not None and rem <= 3:
+            pill = "<span class='pill bad'>已用完</span>"
+        else:
+            pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
     return f"""<div class="card{urgent}"><div class="top"><span class="name">{name}</span>
 {pill}</div>
 <div class="pct" style="color:{c}">{pct_txt}</div>
