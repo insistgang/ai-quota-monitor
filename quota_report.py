@@ -969,6 +969,28 @@ def _minimax(label: str) -> dict:
         return {"name": label, "status": f"查询失败: {type(e).__name__}"}
 
 
+def _xiavier(label: str = "xiavier 中转站") -> dict:
+    """静态数据源：从知识库财务台账读取 xiavier 余额（用户手动维护）。"""
+    finance_path = HOME / "Documents" / "knowledge" / "06-Growth" / "Finance" / "大模型订阅与消费盘点.md"
+    try:
+        text = finance_path.read_text(encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        return {"name": label, "status": f"读取台账失败: {type(e).__name__}"}
+
+    # 优先匹配明确标注 xiavier 的余额；未命中则 fallback 到"中转平台"余额
+    for pattern in (r"xiavier.*?现余额\s*(\d+(?:\.\d+)?)\s*刀", r"中转平台.*?现余额\s*(\d+(?:\.\d+)?)\s*刀"):
+        m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if m:
+            balance = float(m.group(1))
+            return {
+                "name": label,
+                "status": "ok",
+                "used_pct": None,
+                "used_text": f"剩 {balance:g} 刀",
+            }
+    return {"name": label, "status": "台账未找到 xiavier 余额"}
+
+
 def _kimi_keys_from_codebar() -> tuple[str | None, str | None]:
     mine = andy = None
     try:
@@ -1095,6 +1117,7 @@ def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
         ("grok", lambda: [_grok("Grok · SuperGrok")]),
         ("minimax", lambda: [_minimax("MiniMax")]),
         ("antigravity", _agy),
+        ("xiavier", lambda: [_xiavier()]),
     ]
     # Grok Win 已退订，不再采集；Codex Win 只有校园网内才可达远程机
     if _on_campus_network():
