@@ -656,26 +656,7 @@ class PageSplitTests(unittest.TestCase):
         self.assertNotIn("每日消耗（周计数口径）", subscriptions)
 
 
-class CodexWinLimitsTests(unittest.TestCase):
-    def _event(self, ts, *, primary=None, secondary=None, extra=None):
-        rl = {
-            "limit_id": "codex",
-            "primary": primary,
-            "secondary": secondary,
-            "plan_type": "plus",
-        }
-        if extra:
-            rl.update(extra)
-        return {
-            "timestamp": ts,
-            "type": "event_msg",
-            "payload": {"type": "token_count", "rate_limits": rl},
-        }
-
-    def test_find_rate_limits_skips_null_windows(self):
-        empty = self._event("2026-08-26T00:00:00Z", primary=None, secondary=None)
-        self.assertIsNone(quota_report._find_rate_limits(empty))
-
+class CodexRowTests(unittest.TestCase):
     def test_row_uses_window_minutes_not_primary_name(self):
         now = int(dt.datetime.now().timestamp())
         rl = {
@@ -708,26 +689,6 @@ class CodexWinLimitsTests(unittest.TestCase):
         row = quota_report._codex_row("Codex · Mac", rl)
         self.assertEqual(row["used_pct"], 30.0)
         self.assertNotIn("fiveh_pct", row)
-
-    def test_pick_latest_ignores_stale_mtime_order(self):
-        now = int(dt.datetime.now().timestamp())
-        stale = self._event(
-            "2026-08-25T19:20:22.150Z",
-            primary={"used_percent": 0.0, "window_minutes": 300, "resets_at": now + 3600},
-            secondary={"used_percent": 16.0, "window_minutes": 10080, "resets_at": now + 86400},
-        )
-        empty = self._event("2026-08-25T16:24:51.899Z", primary=None, secondary=None)
-        fresh = self._event(
-            "2026-08-26T05:27:56.910Z",
-            primary={"used_percent": 94.0, "window_minutes": 300, "resets_at": now + 7200},
-            secondary={"used_percent": 30.0, "window_minutes": 10080, "resets_at": now + 2 * 86400},
-        )
-        text = "\n".join(json.dumps(x) for x in (stale, empty, fresh))
-        rl, ts = quota_report._pick_latest_codex_limits(text)
-        self.assertEqual(ts, "2026-08-26T05:27:56.910Z")
-        row = quota_report._codex_row("Codex · Win", rl)
-        self.assertEqual(row["used_pct"], 30.0)
-        self.assertEqual(row["fiveh_pct"], 94.0)
 
 
 class GrokWinBillingTests(unittest.TestCase):
@@ -775,36 +736,126 @@ class GrokWinBillingTests(unittest.TestCase):
         self.assertIsNone(row)
 
 
+class CodexAuthTests(unittest.TestCase):
+    def _payload(self):
+        now = int(dt.datetime.now().timestamp())
+        return {
+            "schema_version": 1,
+            "accounts": [
+                {
+                    "number": 1,
+                    "email": "first@163.com",
+                    "plan": "plus",
+                    "active": False,
+                    "usage": {
+                        "source": "api",
+                        "updated_at": now - 60,
+                        "primary": {"used_percent": 100, "window_minutes": 300,
+                                    "resets_at": now + 3600},
+                        "secondary": {"used_percent": 16, "window_minutes": 10080,
+                                      "resets_at": now + 6 * 86400},
+                        "refresh": {"status": "ok", "error_code": None},
+                    },
+                },
+                {
+                    "number": 2,
+                    "email": "second@hotmail.com",
+                    "plan": "plus",
+                    "active": True,
+                    "usage": {
+                        "source": "api",
+                        "updated_at": now,
+                        "primary": {"used_percent": 8, "window_minutes": 300,
+                                    "resets_at": now + 7200},
+                        "secondary": {"used_percent": 17, "window_minutes": 10080,
+                                      "resets_at": now + 5 * 86400},
+                        "refresh": {"status": "ok", "error_code": None},
+                    },
+                },
+                {
+                    "number": 3,
+                    "email": "third@163.com",
+                    "plan": "plus",
+                    "active": False,
+                    "usage": {
+                        "source": "cache",
+                        "primary": None,
+                        "secondary": None,
+                        "refresh": {"status": "error", "error_code": "unauthorized"},
+                    },
+                },
+            ],
+        }
+
+    def _run(self, payload, returncode=0):
+        return subprocess.CompletedProcess(
+            ["codex-auth", "list", "--json"], returncode,
+            stdout=json.dumps(payload).encode(), stderr=b"",
+        )
+
+    def test_parses_every_account_with_windows_and_notes(self):
+        with mock.patch.object(quota_report.shutil, "which", return_value="codex-auth"), \
+             mock.patch.object(quota_report.subprocess, "run",
+                               return_value=self._run(self._payload())):
+            rows = quota_report._codex_auth_accounts()
+
+        self.assertEqual(len(rows), 3)
+        first, second, third = rows
+        self.assertEqual(first["name"], "Codex · first@163.com")
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(first["used_pct"], 16)
+        self.assertEqual(first["fiveh_pct"], 100)
+        self.assertIn("Plus", first["note"])
+        self.assertNotIn("当前活跃", first["note"])
+        self.assertEqual(second["used_pct"], 17)
+        self.assertEqual(second["fiveh_pct"], 8)
+        self.assertIn("当前活跃", second["note"])
+        self.assertEqual(third["name"], "Codex · third@163.com")
+        self.assertEqual(third["status"], "unauthorized")
+
+    def test_cli_failure_returns_single_error_row(self):
+        with mock.patch.object(quota_report.shutil, "which", return_value="codex-auth"), \
+             mock.patch.object(quota_report.subprocess, "run",
+                               return_value=self._run({}, returncode=1)):
+            rows = quota_report._codex_auth_accounts()
+
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["status"], "ok")
+
+    def test_public_page_masks_account_emails(self):
+        rows = [{
+            "name": "Codex · first@163.com",
+            "status": "ok",
+            "used_pct": 16.0,
+            "used_text": "16%",
+            "reset": "10-10 11:30",
+        }]
+
+        page = quota_report.render_html(rows, public=True, page="overview")
+
+        self.assertNotIn("first@163.com", page)
+        self.assertIn("f***@163.com", page)
+
+
 class CollectSourceTests(unittest.TestCase):
-    def _names(self, ssid):
+    def test_collect_includes_codex_auth_accounts(self):
         def row(label):
             return {"name": label, "status": "ok"}
-        with mock.patch.object(quota_report, "_current_wifi_ssid", return_value=ssid), \
-             mock.patch.object(quota_report, "_load_kimi_keys", return_value=(None, None)), \
+        with mock.patch.object(quota_report, "_load_kimi_keys", return_value=(None, None)), \
              mock.patch.object(quota_report, "_kimi_quota", side_effect=lambda label, key: row(label)), \
              mock.patch.object(quota_report, "_doubao_quota", return_value=row("豆包")), \
-             mock.patch.object(quota_report, "_codex_local", return_value=row("Codex · Mac")), \
-             mock.patch.object(quota_report, "_codex_win", return_value=row("Codex · Win")), \
+             mock.patch.object(quota_report, "_codex_auth_accounts",
+                               return_value=[row("Codex · first@163.com"),
+                                             row("Codex · second@hotmail.com")]), \
              mock.patch.object(quota_report, "_grok", return_value=row("Grok · SuperGrok")), \
              mock.patch.object(quota_report, "_minimax", return_value=row("MiniMax")), \
              mock.patch.object(quota_report, "_agy", return_value=[row("Antigravity · Gemini 组")]):
-            return [r["name"] for r in quota_report.collect()]
+            names = [r["name"] for r in quota_report.collect()]
 
-    def test_off_campus_shows_minimax_but_not_win(self):
-        names = self._names("home-wifi")
+        self.assertIn("Codex · first@163.com", names)
+        self.assertIn("Codex · second@hotmail.com", names)
         self.assertIn("MiniMax", names)
-        self.assertNotIn("Codex · Win", names)
-        self.assertNotIn("Grok · Win", names)
-
-    def test_offline_hides_win(self):
-        names = self._names(None)
-        self.assertNotIn("Codex · Win", names)
-        self.assertIn("MiniMax", names)
-
-    def test_on_campus_shows_codex_win(self):
-        names = self._names("sues")
-        self.assertIn("Codex · Win", names)
-        self.assertIn("MiniMax", names)
+        self.assertEqual(len(names), 8)
 
 
 if __name__ == "__main__":

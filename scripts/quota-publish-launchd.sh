@@ -4,7 +4,7 @@
 set -euo pipefail
 
 TASK_USER_HOME="${HOME:?HOME is required}"
-REPO="${QUOTA_MONITOR_HOME:-$TASK_USER_HOME/Documents/ai-quota-monitor}"
+REPO="${QUOTA_MONITOR_HOME:-$TASK_USER_HOME/Desktop/个人工具/ai-quota-monitor}"
 PYTHON_BIN="${QUOTA_PYTHON_BIN:-}"
 
 if [[ -z "$PYTHON_BIN" ]]; then
