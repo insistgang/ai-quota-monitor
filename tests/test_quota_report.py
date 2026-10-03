@@ -617,6 +617,60 @@ class HtmlEscapingTests(unittest.TestCase):
         self.assertIn("08&lt;x&gt;", rendered)
 
 
+class EmailPrivacyTests(unittest.TestCase):
+    def test_static_live_and_public_pages_mask_cards_notes_errors_and_alerts(self):
+        rows = [
+            {"name": "Codex · first@163.com", "status": "ok", "used_pct": 16,
+             "used_text": "16%", "reset": "10-10 11:30",
+             "note": "当前活跃：owner+tag@example.com"},
+            {"name": "Codex · second@hotmail.com",
+             "status": "登录失败：second@hotmail.com"},
+        ]
+        alerts = [{"name": "Codex · first@163.com", "kind": "week",
+                   "until": "1 小时后", "remain": 84}]
+        with mock.patch.object(quota_report, "_alerts", return_value=alerts):
+            for options in ({}, {"live": True}, {"public": True}):
+                with self.subTest(options=options):
+                    page = quota_report.render_html(rows, page="overview", **options)
+                    for email in ("first@163.com", "owner+tag@example.com",
+                                  "second@hotmail.com"):
+                        self.assertNotIn(email, page)
+                    for masked in ("f***@163.com", "o***@example.com", "s***@hotmail.com"):
+                        self.assertIn(masked, page)
+        self.assertEqual(rows[0]["name"], "Codex · first@163.com")
+        self.assertEqual(rows[0]["note"], "当前活跃：owner+tag@example.com")
+
+    def test_history_masks_labels_attributes_and_filter_options(self):
+        history = [("2026-10-04", [
+            {"name": "Codex · first@163.com", "delta": 5, "reset": False, "partial": False},
+            {"name": "Codex · second@hotmail.com", "delta": 0, "reset": True, "partial": False},
+        ])]
+        with mock.patch.object(quota_report, "_daily_deltas", return_value=history):
+            for public in (False, True):
+                with self.subTest(public=public):
+                    page = quota_report._history_html(public=public, controls=True)
+                    for raw, masked in (("first@163.com", "f***@163.com"),
+                                        ("second@hotmail.com", "s***@hotmail.com")):
+                        self.assertNotIn(raw, page)
+                        self.assertIn(f'data-source="Codex · {masked}"', page)
+                        self.assertIn(f'<option value="Codex · {masked}">', page)
+
+    def test_subscription_pages_mask_emails_before_html_escaping(self):
+        finance = {
+            "subs": [{"name": "Codex · first@163.com", "cost": "99 元/月",
+                      "renewal": "<b>o@x.co</b>"}],
+            "ledger": [{"date": "2026-10-04", "item": "充值 first@163.com", "amount": "10 元"}],
+            "non_ai": ["会员 second@hotmail.com"], "total_ai": "", "total_all": "",
+        }
+        with mock.patch.object(quota_report, "_load_finance", return_value=finance):
+            for public in (False, True):
+                with self.subTest(public=public):
+                    page = quota_report.render_html([], public=public, page="subscriptions")
+                    for email in ("first@163.com", "o@x.co", "second@hotmail.com"):
+                        self.assertNotIn(email, page)
+                    self.assertIn("&lt;b&gt;o***@x.co&lt;/b&gt;", page)
+
+
 class PageSplitTests(unittest.TestCase):
     def test_public_site_splits_overview_history_and_subscriptions(self):
         snapshots = []
