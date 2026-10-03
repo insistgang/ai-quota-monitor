@@ -48,7 +48,7 @@ flowchart LR
 | Codex（codex-auth 多账号） | `codex-auth list --json` 官方额度接口，一次读取全部已登录账号的 5h/周窗 | 否 | codex-auth 已登录各账号 |
 | Grok · SuperGrok（Mac） | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
 | MiniMax | 官方 CLI 的 quota JSON | 否 | CLI 需要已登录 |
-| Antigravity | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
+| Antigravity | 隐藏 TUI 读取 `/usage` 状态面板，只取 Gemini 组（Claude/GPT 组已停用） | 否 | CLI 需要已登录 |
 
 Grok · Win 已退订，不再采集；历史底账中的 Grok · Win 记录也会在展示层过滤。
 

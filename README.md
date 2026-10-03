@@ -19,7 +19,7 @@
 | Codex（codex-auth 多账号） | `codex-auth list --json` 一次读取全部已登录账号的官方 5h/周窗额度（API 实时，只读） |
 | Grok（SuperGrok / Mac） | tmux 驱动 `grok` TUI 的 `/usage` 面板截屏解析（Win 端已退订，不再采集，历史底账也过滤） |
 | MiniMax | `mmx quota show`（官方 CLI，JSON 输出） |
-| Antigravity（Gemini 组 / Claude·GPT 组） | tmux 驱动 `agy` TUI 的 `/usage` 面板截屏解析 |
+| Antigravity（Gemini 组） | tmux 驱动 `agy` TUI 的 `/usage` 面板截屏解析（Claude/GPT 组已停用，不采集，历史底账也过滤） |
 
 ## 用法
 

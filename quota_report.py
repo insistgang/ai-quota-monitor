@@ -608,22 +608,15 @@ def _agy_parse_group(text: str, marker: str) -> dict | None:
 
 
 def _agy() -> list[dict]:
-    """Antigravity：tmux 驱动 agy TUI /usage，面板含 GEMINI 与 CLAUDE/GPT 两组额度。"""
+    """Antigravity：tmux 驱动 agy TUI /usage，只取 GEMINI 组（Claude/GPT 组已停用，不采集）。"""
     text = _tmux_slash_probe("agy", "/usage", wait_boot=10, wait_panel=8, pre_enter=True)
     if not text:
-        return [{"name": "Antigravity（Gemini/Claude）", "status": "TUI 探测失败"}]
+        return [{"name": "Antigravity · Gemini 组", "status": "TUI 探测失败"}]
     g = _agy_parse_group(text, "GEMINI MODELS")
-    c = _agy_parse_group(text, "CLAUDE AND GPT MODELS")
-    rows = []
-    if g:
-        g.update({"name": "Antigravity · Gemini 组", "status": "ok", "note": "Google AI Pro"})
-        rows.append(g)
-    if c:
-        c.update({"name": "Antigravity · Claude/GPT 组", "status": "ok", "note": "Google AI Pro"})
-        rows.append(c)
-    if not rows:
-        rows.append({"name": "Antigravity（Gemini/Claude）", "status": "面板解析失败"})
-    return rows
+    if not g:
+        return [{"name": "Antigravity · Gemini 组", "status": "面板解析失败"}]
+    g.update({"name": "Antigravity · Gemini 组", "status": "ok", "note": "Google AI Pro"})
+    return [g]
 
 
 def _codex_auth_accounts() -> list[dict]:
@@ -908,9 +901,11 @@ def _unhealthy_rows(rows: list[dict]) -> list[dict]:
 
 
 def _quota_hidden(name: str | None) -> bool:
-    """不再展示的额度源（如已退订的 Grok Win），历史底账里一并过滤。"""
+    """不再展示的额度源（已退订的 Grok Win、已停用的 Antigravity Claude/GPT 组），历史底账里一并过滤。"""
     lowered = (name or "").lower()
-    return "grok" in lowered and "win" in lowered
+    return ("grok" in lowered and "win" in lowered) or (
+        "antigravity" in lowered and "claude" in lowered
+    )
 
 
 def _visible_quota_rows(rows: list[dict]) -> list[dict]:
