@@ -284,7 +284,7 @@ class DoubaoDomTests(unittest.TestCase):
 
 
 class AntigravityQuotaTests(unittest.TestCase):
-    def test_exhausted_group_stays_visible_with_full_usage_and_reset_time(self):
+    def test_claude_gpt_group_is_no_longer_collected(self):
         panel = """
 CLAUDE AND GPT MODELS
   Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
@@ -301,16 +301,43 @@ CLAUDE AND GPT MODELS
             rows = quota_report._agy()
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["name"], "Antigravity · Claude/GPT 组")
-        self.assertEqual(rows[0]["status"], "ok")
-        self.assertEqual(rows[0]["used_pct"], 100.0)
-        self.assertEqual(rows[0]["used_text"], "100%")
-        self.assertRegex(rows[0]["reset"], r"^\d{2}-\d{2} \d{2}:\d{2}$")
-        self.assertNotIn("fiveh_pct", rows[0])
+        self.assertEqual(rows[0]["name"], "Antigravity · Gemini 组")
+        self.assertEqual(rows[0]["status"], "面板解析失败")
 
-        card = quota_report._card(rows[0])
-        self.assertIn(">100%</div>", card)
-        self.assertIn(f"重置 {rows[0]['reset']}", card)
+    def test_claude_gpt_group_is_hidden_from_history(self):
+        rows = [
+            {"name": "Antigravity · Claude/GPT 组", "status": "ok", "used_pct": 6.0},
+            {"name": "Antigravity · Gemini 组", "status": "ok", "used_pct": 68.0},
+        ]
+
+        names = [r["name"] for r in quota_report._visible_quota_rows(rows)]
+
+        self.assertEqual(names, ["Antigravity · Gemini 组"])
+
+    def test_only_gemini_group_is_collected(self):
+        panel = """
+GEMINI MODELS
+  Models within this group: Gemini Pro, Gemini Flash
+
+  Weekly Limit Remaining
+    31.18%
+    Refreshes in 96h 11m
+
+CLAUDE AND GPT MODELS
+  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
+
+  Weekly Limit Remaining
+    93.87%
+    Refreshes in 21h 11m
+"""
+
+        with mock.patch.object(quota_report, "_tmux_slash_probe", return_value=panel):
+            rows = quota_report._agy()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "Antigravity · Gemini 组")
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertEqual(rows[0]["used_pct"], 68.8)
 
 
 class CollectionRetryTests(unittest.TestCase):
