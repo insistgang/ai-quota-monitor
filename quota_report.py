@@ -1069,8 +1069,8 @@ def _alerts_text(alerts: list[dict]) -> list[str]:
 
 
 def _html_text(value: object) -> str:
-    """把动态数据编码为 HTML 文本，保留生成器自身的标签结构。"""
-    return html.escape(str(value), quote=True)
+    """所有网页动态文本先打码邮箱，再转义；本地底账保留原始账号标识。"""
+    return html.escape(_mask_email(value), quote=True)
 
 
 def _alerts_html(alerts: list[dict]) -> str:
@@ -1316,7 +1316,7 @@ _HIST_PUBLIC = {"Kimi · 本人": "Kimi · 主账号", "Kimi · Andy": "Kimi · 
 
 
 def _mask_email(text) -> str:
-    """公开页不暴露完整邮箱：保留首字符，其余打码。"""
+    """网页不暴露完整邮箱：保留首字符，其余打码。"""
     return re.sub(r"([\w.+-])[\w.+-]*(?=@)", r"\1***", str(text))
 
 

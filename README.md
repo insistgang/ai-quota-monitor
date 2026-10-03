@@ -65,6 +65,7 @@ launchd 的 stdout/stderr 默认写入 `~/Library/Logs/ai-quota-monitor/`；安�
 
 - **全部本机只读取数**：不改任何账号配置、不发消息、不消耗对话额度
 - **永不打印/存储任何 key 或 token**；凭据只从各 CLI 自己的本地配置里读出来用
+- 本地静态看板、实时服务和公开网页均默认打码邮箱（如 `f***@163.com`），覆盖卡片、提醒、历史筛选和订阅账单；本地 CSV / JSON 保留原始账号标识用于区分账号
 - 豆包只把套餐、百分比、重置时间和采集时间写入 `~/.cache/ai-quota-monitor/doubao-quota.json`（权限 `0600`），不落盘整页 DOM
 - `quota-log.csv`、`quota-dashboard.html` 含你的用量数据，已在 .gitignore 排除，不会误传
 
