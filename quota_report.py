@@ -5,8 +5,7 @@
 - Kimi（本人 99/月）：KimiCodeBar credentials 里 alias=Leo-usage 的 key
 - Kimi（Andy 199/月）：KimiCodeBar credentials 里 alias=andy* 的 key
 - 豆包个人会员：已登录 Chrome 中官方额度页的可见 DOM
-- Codex（Mac）：tmux 驱动本机 codex TUI 的 /status 状态栏（实时）
-- Codex（Win）：仅校园网内 ssh desktop 读取对端会话里时间戳最新的 rate_limits
+- Codex（codex-auth 多账号）：`codex-auth list --json` 一次读取全部已登录账号的官方 5h/周窗额度（API 实时）
 - Grok（SuperGrok / Mac）：tmux 驱动本机 grok TUI 的 /usage 面板截屏解析（Win 端已退订，不采集）
 - MiniMax：本机 mmx CLI 的 `mmx quota show`（JSON 输出）
 
@@ -477,43 +476,6 @@ def _rate_window_usable(win) -> bool:
     return isinstance(win, dict) and win.get("used_percent") is not None
 
 
-def _rate_limits_usable(rl) -> bool:
-    return isinstance(rl, dict) and (
-        _rate_window_usable(rl.get("primary")) or _rate_window_usable(rl.get("secondary"))
-    )
-
-
-def _find_rate_limits(o):
-    if isinstance(o, dict):
-        rl = o.get("rate_limits")
-        if _rate_limits_usable(rl):
-            return rl
-        for v in o.values():
-            r = _find_rate_limits(v)
-            if r:
-                return r
-    elif isinstance(o, list):
-        for v in o:
-            r = _find_rate_limits(v)
-            if r:
-                return r
-    return None
-
-
-def _codex_event_ts(obj) -> str:
-    if not isinstance(obj, dict):
-        return ""
-    ts = obj.get("timestamp")
-    if isinstance(ts, str) and ts:
-        return ts
-    payload = obj.get("payload")
-    if isinstance(payload, dict):
-        ts = payload.get("timestamp")
-        if isinstance(ts, str) and ts:
-            return ts
-    return ""
-
-
 def _codex_windows(rl: dict) -> tuple[dict, dict]:
     """按 window_minutes 区分周窗和 5h 窗，避免把 primary 的 5h 数据当成周额度。"""
     week, fiveh = {}, {}
@@ -664,158 +626,53 @@ def _agy() -> list[dict]:
     return rows
 
 
-def _codex_bin() -> str | None:
-    """返回可用的 codex 二进制：~/.local/bin 的 npm 全局版可能缺可选依赖，逐个试 --version。"""
-    candidates = ["codex", str(HOME / ".local/bin/codex"), "/opt/homebrew/bin/codex"]
-    for c in candidates:
-        try:
-            r = subprocess.run([c, "--version"], capture_output=True, timeout=8)
-            if r.returncode == 0:
-                return c
-        except Exception:  # noqa: BLE001
-            continue
-    return None
-
-
-def _codex_local(label: str) -> dict:
-    """Mac 端：tmux 驱动 codex TUI /status，状态栏含 'weekly N% left'（实时）。
-    失败则回退到会话文件扫描（可能滞后）。"""
-    bin_path = _codex_bin()
-    if not bin_path:
-        return {"name": label, "status": "本机 codex 二进制均不可用"}
-    text = _tmux_slash_probe(bin_path, "/status", wait_boot=12, wait_panel=5)
-    if text:
-        m = re.search(r"weekly\s+(\d+(?:\.\d+)?)%\s+left", text)
-        if m:
-            left = float(m.group(1))
-            m_model = re.search(r"› /status.*?(gpt[\w.\- ]+?) ·", text.replace("\n", " "))
-            note = m_model.group(1).strip() if m_model else ""
-            # TUI 状态栏不带重置时刻和 5h 窗；两者都从 Codex 会话里的官方 rate_limits 补齐
-            reset = "滚动周窗"
-            fiveh: dict = {}
-            try:
-                files = sorted((HOME / ".codex/sessions").rglob("rollout-*.jsonl"),
-                               key=lambda p: p.stat().st_mtime)
-                for f in reversed(files[-5:]):
-                    rl = _extract_rate_limits(f)
-                    if not rl:
-                        continue
-                    week_win, fiveh_win = _codex_windows(rl)
-                    if week_win.get("resets_at"):
-                        reset = _fmt_epoch(week_win["resets_at"])
-                    if fiveh_win.get("used_percent") is not None and _fiveh_window_active(fiveh_win):
-                        fiveh = fiveh_win
-                    if week_win.get("resets_at") and fiveh:
-                        break
-            except Exception:  # noqa: BLE001
-                pass
-            row = {
-                "name": label,
-                "status": "ok",
-                "used_pct": round(100 - left, 1),
-                "used_text": f"{100 - left:g}%（剩 {left:g}%）",
-                "reset": reset,
-                "note": (note + " · 实时" if note else "实时"),
-            }
-            if fiveh:
-                row["fiveh_pct"] = fiveh["used_percent"]
-                row["fiveh_text"] = f"{fiveh['used_percent']:g}%"
-                row["fiveh_reset"] = _fmt_epoch(fiveh.get("resets_at"))
-            return row
-    # 回退：会话文件
-    root = HOME / ".codex" / "sessions"
-    try:
-        files = sorted(root.rglob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime)
-        for f in reversed(files[-5:]):
-            rl = _extract_rate_limits(f)
-            if rl:
-                row = _codex_row(label, rl)
-                row["note"] = f"会话文件 · 数据 {_fmt_epoch(f.stat().st_mtime)}（非实时）"
-                return row
-        return {"name": label, "status": "TUI 探测失败且无会话数据"}
-    except Exception as e:  # noqa: BLE001
-        return {"name": label, "status": f"读取失败: {type(e).__name__}"}
-
-
-def _extract_rate_limits(path: Path) -> dict | None:
-    last = None
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                if "rate_limits" not in line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:  # noqa: BLE001
-                    continue
-                found = _find_rate_limits(obj)
-                if found:
-                    last = found
-    except Exception:  # noqa: BLE001
-        return None
-    return last
-
-
-def _pick_latest_codex_limits(text: str) -> tuple[dict, str] | tuple[None, None]:
-    """从若干 jsonl 行里选出内容时间最新、且窗口数据完整的 rate_limits。"""
-    best_rl = None
-    best_ts = ""
-    for raw in text.splitlines():
-        raw = raw.strip()
-        if "rate_limits" not in raw:
-            continue
-        try:
-            obj = json.loads(raw)
-        except Exception:  # noqa: BLE001
-            continue
-        rl = _find_rate_limits(obj)
-        if not rl:
-            continue
-        ts = _codex_event_ts(obj)
-        if best_rl is None or ts >= best_ts:
-            best_rl, best_ts = rl, ts
-    if not best_rl:
-        return None, None
-    return best_rl, best_ts
-
-
-def _codex_win(label: str) -> dict:
-    # Windows 上长会话常保持文件句柄，LastWriteTime 不会跟着 append 更新。
-    # 因此同时按时间和体积取样，再按事件 timestamp 选最新额度。
-    ps_script = (
-        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
-        "$dir = Join-Path $env:USERPROFILE '.codex\\sessions'\n"
-        "if (-not (Test-Path $dir)) { exit 0 }\n"
-        "$all = @(Get-ChildItem -Path $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue)\n"
-        "if (-not $all) { exit 0 }\n"
-        "$byTime = $all | Sort-Object LastWriteTime | Select-Object -Last 12\n"
-        "$bySize = $all | Sort-Object Length | Select-Object -Last 8\n"
-        "$files = @($byTime + $bySize | Sort-Object FullName -Unique)\n"
-        "foreach ($f in $files) {\n"
-        "    $lines = Select-String -Path $f.FullName -Pattern 'rate_limits' | Select-Object -Last 8\n"
-        "    foreach ($line in $lines) { Write-Output $line.Line }\n"
-        "}\n"
-    )
-    encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+def _codex_auth_accounts() -> list[dict]:
+    """Codex 多账号：`codex-auth list --json` 一次取回全部已登录账号的官方 5h/周窗额度。"""
+    bin_path = shutil.which("codex-auth") or str(HOME / ".local/bin/codex-auth")
     try:
         out = subprocess.run(
-            ["ssh", "-o", f"ConnectTimeout={SSH_TIMEOUT - 10}", "desktop",
-             "powershell", "-NoProfile", "-EncodedCommand", encoded],
-            capture_output=True, timeout=max(SSH_TIMEOUT, 40), check=False,
+            [bin_path, "list", "--json"],
+            capture_output=True, timeout=60, check=False,
         )
-        stdout = out.stdout or b""
-        text = stdout.decode("utf-8", errors="ignore")
-        if out.returncode != 0 or not text.strip():
-            return {"name": label, "status": "ssh 无输出（台式机离线？）"}
-        rl, ts = _pick_latest_codex_limits(text)
-        if not rl:
-            return {"name": label, "status": "对端会话无额度数据"}
-        note = "远程会话"
-        if ts:
-            note += f" · 数据 {_fmt_utc(ts)}"
-        return _codex_row(label, rl, note=note)
+    except FileNotFoundError:
+        return [{"name": "Codex（codex-auth）", "status": "codex-auth 未安装"}]
     except Exception as e:  # noqa: BLE001
-        return {"name": label, "status": f"ssh 失败: {type(e).__name__}"}
+        return [{"name": "Codex（codex-auth）", "status": f"查询失败: {type(e).__name__}"}]
+    if out.returncode != 0:
+        return [{"name": "Codex（codex-auth）", "status": "codex-auth list 执行失败"}]
+    try:
+        data = json.loads(out.stdout.decode("utf-8", errors="ignore"))
+    except Exception:  # noqa: BLE001
+        return [{"name": "Codex（codex-auth）", "status": "codex-auth 输出解析失败"}]
+    rows = []
+    for acct in data.get("accounts", []):
+        if not isinstance(acct, dict):
+            continue
+        email = acct.get("email") or f"账号{acct.get('number', '?')}"
+        label = f"Codex · {email}"
+        usage = acct.get("usage") or {}
+        refresh = usage.get("refresh") or {}
+        if not (
+            _rate_window_usable(usage.get("primary"))
+            or _rate_window_usable(usage.get("secondary"))
+        ):
+            rows.append({"name": label, "status": refresh.get("error_code") or "无额度数据"})
+            continue
+        note_parts = []
+        plan = acct.get("plan")
+        if plan:
+            note_parts.append(str(plan).capitalize())
+        if acct.get("active"):
+            note_parts.append("当前活跃")
+        if refresh and refresh.get("status") != "ok":
+            note_parts.append("API 刷新失败，数据可能滞后")
+        updated = usage.get("updated_at")
+        if updated:
+            note_parts.append(f"数据 {_fmt_epoch(updated)}")
+        rows.append(_codex_row(label, usage, note=" · ".join(note_parts)))
+    if not rows:
+        return [{"name": "Codex（codex-auth）", "status": "codex-auth 未登录任何账号"}]
+    return rows
 
 
 def _grok(label: str) -> dict:
@@ -1060,45 +917,17 @@ def _visible_quota_rows(rows: list[dict]) -> list[dict]:
     return [row for row in rows if not _quota_hidden(row.get("name"))]
 
 
-CAMPUS_SSID = os.environ.get("QUOTA_CAMPUS_SSID", "sues")
-
-
-def _current_wifi_ssid() -> str | None:
-    """当前 Wi-Fi 的 SSID；未连接或非 Wi-Fi 接口返回 None。"""
-    for iface in ("en0", "en1"):
-        try:
-            r = subprocess.run(
-                ["/usr/sbin/networksetup", "-getairportnetwork", iface],
-                capture_output=True, text=True, timeout=5, check=False,
-            )
-        except Exception:  # noqa: BLE001
-            continue
-        m = re.search(r"Current Wi-Fi Network:\s*(.+)", r.stdout or "")
-        if m:
-            return m.group(1).strip()
-    return None
-
-
-def _on_campus_network() -> bool:
-    """只有连上校园网（默认 sues，可用 QUOTA_CAMPUS_SSID 覆盖）才采集 Win 远程机。"""
-    ssid = _current_wifi_ssid()
-    return ssid is not None and ssid.lower() == CAMPUS_SSID.lower()
-
-
 def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
     mine, andy = _load_kimi_keys()
     batches = [
         ("kimi_mine", lambda: [_kimi_quota("Kimi · 本人（948/年）", mine)]),
         ("kimi_andy", lambda: [_kimi_quota("Kimi · Andy（199/月）", andy)]),
         ("doubao", lambda: [_doubao_quota()]),
-        ("codex_local", lambda: [_codex_local("Codex · Mac")]),
+        ("codex_auth", _codex_auth_accounts),
         ("grok", lambda: [_grok("Grok · SuperGrok")]),
         ("minimax", lambda: [_minimax("MiniMax")]),
         ("antigravity", _agy),
     ]
-    # Grok Win 已退订，不再采集；Codex Win 只有校园网内才可达远程机
-    if _on_campus_network():
-        batches.append(("codex_win", lambda: [_codex_win("Codex · Win")]))
     return _visible_quota_rows(_collect_batches_with_retries(
         batches,
         retry_attempts=retry_attempts,
@@ -1491,6 +1320,15 @@ PUBLIC_LABELS = {
 _HIST_PUBLIC = {"Kimi · 本人": "Kimi · 主账号", "Kimi · Andy": "Kimi · 副账号"}
 
 
+def _mask_email(text) -> str:
+    """公开页不暴露完整邮箱：保留首字符，其余打码。"""
+    return re.sub(r"([\w.+-])[\w.+-]*(?=@)", r"\1***", str(text))
+
+
+def _public_name(name: str) -> str:
+    return _mask_email(PUBLIC_LABELS.get(name, _HIST_PUBLIC.get(name, name)))
+
+
 def _reset_marker_minutes(raw: str | None) -> int | None:
     """把周重置标记归一化为闰年内分钟数，不依赖日志采集年份。"""
     if not raw:
@@ -1605,7 +1443,7 @@ def _history_html(public: bool, days: int = 7, controls: bool = False,
         if shown:
             mx = max(r["delta"] for r in shown)
             for r in sorted(shown, key=lambda x: -x["delta"]):
-                name = _HIST_PUBLIC.get(r["name"], r["name"]) if public else r["name"]
+                name = _public_name(r["name"]) if public else r["name"]
                 source_names.add(name)
                 w = max(3, round(r["delta"] / mx * 100))
                 tags = ("*" if r["partial"] else "") + (" ↺" if r["reset"] else "")
@@ -1617,7 +1455,7 @@ def _history_html(public: bool, days: int = 7, controls: bool = False,
         else:
             lines.append('<div class="hrow dim">当日未记录到消耗</div>')
         for r in resets:
-            name = _HIST_PUBLIC.get(r["name"], r["name"]) if public else r["name"]
+            name = _public_name(r["name"]) if public else r["name"]
             source_names.add(name)
             lines.append(
                 f'<div class="hrow dim" data-source="{_html_text(name)}">'
@@ -1724,7 +1562,7 @@ def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     rows = _sort_rows(list(rows))
     if public:
-        rows = [{**r, "name": PUBLIC_LABELS.get(r["name"], r["name"])} for r in rows]
+        rows = [{**r, "name": _public_name(r["name"])} for r in rows]
     alerts = _alerts(rows)
     alert_by_name = {a["name"]: a for a in alerts}
     cards = "".join(_card(r, alert_by_name.get(r["name"])) for r in rows)

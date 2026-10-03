@@ -21,8 +21,8 @@ flowchart LR
     A[launchd<br/>09:30–23:30 每小时] --> B[~/.local/bin/quota-publish]
     B --> C[publish_runtime.py]
     C --> D[quota_report.py]
-    D --> E1[Kimi / MiniMax<br/>只读接口或 CLI]
-    D --> E2[Codex / Grok / Antigravity<br/>本地 TUI 状态]
+    D --> E1[Kimi / MiniMax / Codex<br/>只读接口或 CLI]
+    D --> E2[Grok / Antigravity<br/>本地 TUI 状态]
     D --> E3[豆包<br/>刷新额度页 + 可见 DOM]
     E1 --> F[统一额度行]
     E2 --> F
@@ -45,8 +45,7 @@ flowchart LR
 |---|---|---:|---|
 | Kimi for Coding | 官方 usage API，只读已有使用量 | 否 | 依赖本地已配置的账号凭据 |
 | 豆包个人会员 | 刷新已登录的额度管理页，读取可见 DOM | 否 | Chrome、固定标签页和 Apple 事件 JavaScript 必须可用 |
-| Codex · Mac | 隐藏 tmux 会话读取 `/status`，并参考本地会话重置时间 | 否 | CLI 需要已登录 |
-| Codex · Win | SSH 读取远程机最新会话的 rate limit；仅校园网（SSID `sues`）内采集 | 否 | 远程机和网络必须可达 |
+| Codex（codex-auth 多账号） | `codex-auth list --json` 官方额度接口，一次读取全部已登录账号的 5h/周窗 | 否 | codex-auth 已登录各账号 |
 | Grok · SuperGrok（Mac） | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
 | MiniMax | 官方 CLI 的 quota JSON | 否 | CLI 需要已登录 |
 | Antigravity | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
