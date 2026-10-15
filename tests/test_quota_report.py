@@ -13,6 +13,20 @@ import quota_report
 CSV_HEADER = ["ts", "name", "status", "used_pct", "used_text", "reset", "fiveh_text"]
 
 
+def setUpModule():
+    global _public_filter_test_dir, _public_filter_patch
+    _public_filter_test_dir = tempfile.TemporaryDirectory()
+    config = Path(_public_filter_test_dir.name) / "public-hidden-accounts.json"
+    config.write_text(json.dumps({"codex_emails": ["test@example.invalid"]}), encoding="utf-8")
+    _public_filter_patch = mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", config)
+    _public_filter_patch.start()
+
+
+def tearDownModule():
+    _public_filter_patch.stop()
+    _public_filter_test_dir.cleanup()
+
+
 class DoubaoDomTests(unittest.TestCase):
     DOM_TEXT = """
 账号昵称不应进入缓存
@@ -477,15 +491,17 @@ class DailyDeltaTests(unittest.TestCase):
         self.assertIn("Codex · Mac", names)
         self.assertTrue(all("grok · win" not in name.lower() for name in names))
 
-    def test_doubao_is_hidden_from_history_without_changing_other_usage(self):
+    def test_doubao_history_is_restored_without_changing_other_usage(self):
         rows = self._daily_rows([
             ["2026-08-19T23:31:00", "豆包 · 标准套餐", "ok", "10", "10%", "08-24 00:00", ""],
             ["2026-08-20T20:31:00", "豆包 · 标准套餐", "ok", "18", "18%", "08-24 00:00", ""],
             ["2026-08-19T23:31:00", "Codex · Mac", "ok", "4", "4%", "09-01 22:18", ""],
             ["2026-08-20T20:31:00", "Codex · Mac", "ok", "6", "6%", "09-01 22:18", ""],
         ])
-        self.assertEqual(rows, [{"name": "Codex · Mac", "delta": 2.0,
-                                 "reset": False, "partial": False}])
+        self.assertEqual(rows, [
+            {"name": "Codex · Mac", "delta": 2.0, "reset": False, "partial": False},
+            {"name": "豆包 · 标准套餐", "delta": 8.0, "reset": False, "partial": False},
+        ])
 
     def test_history_html_shows_consumption_on_a_reset_day(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -812,6 +828,29 @@ class EmailPrivacyTests(unittest.TestCase):
 
 
 class PageSplitTests(unittest.TestCase):
+    def test_public_site_refuses_missing_or_invalid_account_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "public-hidden-accounts.json"
+            for content in (None, "{not-json}",
+                            json.dumps({"codex_emails": ["not-an-email"]}),
+                            json.dumps({"codex_emails": ["valid@example.com", 123]})):
+                if content is not None:
+                    config.write_text(content, encoding="utf-8")
+                with mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", config):
+                    with self.assertRaisesRegex(RuntimeError, "公开过滤配置"):
+                        quota_report.render_public_site([], root / "index.html")
+                self.assertFalse((root / "index.html").exists())
+
+    def test_public_render_refuses_missing_account_filter_even_without_output_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "missing.json"
+            rows = [{"name": "Codex · 1private@qq.com", "status": "ok",
+                     "used_pct": 10, "used_text": "10%", "reset": "?"}]
+            with mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", config):
+                with self.assertRaisesRegex(RuntimeError, "公开过滤配置"):
+                    quota_report.render_html(rows, public=True, page="overview")
+
     def test_public_site_splits_overview_history_and_subscriptions(self):
         snapshots = []
         for day, start, end in (
@@ -841,6 +880,8 @@ class PageSplitTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            config = root / "public-hidden-accounts.json"
+            config.write_text(json.dumps({"codex_emails": ["test@example.invalid"]}), encoding="utf-8")
             log_path = root / "quota-log.csv"
             with log_path.open("w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
@@ -848,6 +889,7 @@ class PageSplitTests(unittest.TestCase):
                 writer.writerows(snapshots)
             with (
                 mock.patch.object(quota_report, "LOG_CSV", log_path),
+                mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", config),
                 mock.patch.object(quota_report, "_load_finance", return_value=finance),
             ):
                 quota_report.render_public_site(quota_rows, root / "index.html")
@@ -1059,7 +1101,56 @@ class CodexAuthTests(unittest.TestCase):
 
 
 class QuotaVisibilityTests(unittest.TestCase):
-    def test_doubao_is_hidden_from_dashboards_and_subscriptions(self):
+    def test_only_exact_configured_codex_account_is_hidden_publicly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "public-hidden-accounts.json"
+            config.write_text(json.dumps({"codex_emails": ["1first@qq.com"]}), encoding="utf-8")
+            rows = [
+                {"name": name, "status": "ok", "used_pct": 10,
+                 "used_text": "10%", "reset": "?"}
+                for name in ("Codex · 1first@qq.com", "Codex · 1second@qq.com",
+                             "豆包 · 标准套餐")
+            ]
+            with mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", config), \
+                 mock.patch.object(quota_report, "_daily_deltas", return_value=[]), \
+                 mock.patch.object(quota_report, "_load_finance", return_value={
+                     "subs": [], "ledger": [], "non_ai": [], "total_ai": "", "total_all": ""}):
+                public = quota_report.render_html(rows, public=True, page="overview")
+                local = quota_report.render_html(rows, public=False, page="overview")
+
+        self.assertEqual(public.count('class="card"'), 2)
+        self.assertEqual(public.count("Codex · 1***@qq.com"), 1)
+        self.assertIn("豆包 · 标准套餐", public)
+        self.assertEqual(local.count('class="card"'), 3)
+
+    def test_public_history_hides_only_configured_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "public-hidden-accounts.json"
+            config.write_text(json.dumps({"codex_emails": ["1first@qq.com"]}), encoding="utf-8")
+            log_path = root / "quota-log.csv"
+            with log_path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(CSV_HEADER)
+                for name in ("Codex · 1first@qq.com", "Codex · 1second@qq.com",
+                             "豆包 · 标准套餐"):
+                    writer.writerow(["2026-08-19T23:31:00", name, "ok", "10", "10%", "08-24 00:00", ""])
+                    writer.writerow(["2026-08-20T20:31:00", name, "ok", "18", "18%", "08-24 00:00", ""])
+            with mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", config), \
+                 mock.patch.object(quota_report, "LOG_CSV", log_path):
+                public_rows = quota_report._daily_deltas(public=True)
+                local_rows = quota_report._daily_deltas()
+
+        self.assertEqual(
+            {row["name"] for _date, rows in public_rows for row in rows},
+            {"Codex · 1second@qq.com", "豆包 · 标准套餐"},
+        )
+        self.assertEqual(
+            {row["name"] for _date, rows in local_rows for row in rows},
+            {"Codex · 1first@qq.com", "Codex · 1second@qq.com", "豆包 · 标准套餐"},
+        )
+
+    def test_doubao_is_restored_to_dashboards_and_subscriptions(self):
         names = ["豆包 · 体验套餐", "Kimi", "Codex · doubao@example.com",
                  "Grok", "MiniMax", "Antigravity · Gemini 组"]
         rows = [{"name": name, "status": "ok", "used_pct": 10,
@@ -1073,7 +1164,8 @@ class QuotaVisibilityTests(unittest.TestCase):
              mock.patch.object(quota_report, "_daily_deltas", return_value=[]):
             for public in (False, True):
                 page = quota_report.render_html(rows, public=public)
-                self.assertNotIn("豆包", page)
+                self.assertIn("豆包 · 体验套餐", page)
+                self.assertIn("豆包会员", page)
                 for name in ("Kimi", "Grok", "MiniMax", "Antigravity · Gemini 组"):
                     self.assertIn(name, page)
                 self.assertIn("Codex · d***@example.com", page)
@@ -1099,8 +1191,8 @@ class CollectSourceTests(unittest.TestCase):
         self.assertIn("Codex · first@163.com", names)
         self.assertIn("Codex · second@hotmail.com", names)
         self.assertIn("MiniMax", names)
-        self.assertNotIn("豆包", names)
-        self.assertEqual(len(names), 7)
+        self.assertIn("豆包", names)
+        self.assertEqual(len(names), 8)
 
 
 if __name__ == "__main__":
