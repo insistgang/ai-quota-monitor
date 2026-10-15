@@ -477,6 +477,16 @@ class DailyDeltaTests(unittest.TestCase):
         self.assertIn("Codex · Mac", names)
         self.assertTrue(all("grok · win" not in name.lower() for name in names))
 
+    def test_doubao_is_hidden_from_history_without_changing_other_usage(self):
+        rows = self._daily_rows([
+            ["2026-08-19T23:31:00", "豆包 · 标准套餐", "ok", "10", "10%", "08-24 00:00", ""],
+            ["2026-08-20T20:31:00", "豆包 · 标准套餐", "ok", "18", "18%", "08-24 00:00", ""],
+            ["2026-08-19T23:31:00", "Codex · Mac", "ok", "4", "4%", "09-01 22:18", ""],
+            ["2026-08-20T20:31:00", "Codex · Mac", "ok", "6", "6%", "09-01 22:18", ""],
+        ])
+        self.assertEqual(rows, [{"name": "Codex · Mac", "delta": 2.0,
+                                 "reset": False, "partial": False}])
+
     def test_history_html_shows_consumption_on_a_reset_day(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "quota-log.csv"
@@ -1048,6 +1058,29 @@ class CodexAuthTests(unittest.TestCase):
         self.assertIn("f***@163.com", page)
 
 
+class QuotaVisibilityTests(unittest.TestCase):
+    def test_doubao_is_hidden_from_dashboards_and_subscriptions(self):
+        names = ["豆包 · 体验套餐", "Kimi", "Codex · doubao@example.com",
+                 "Grok", "MiniMax", "Antigravity · Gemini 组"]
+        rows = [{"name": name, "status": "ok", "used_pct": 10,
+                 "used_text": "10%", "reset": "?"} for name in names]
+        finance = {
+            "subs": [{"name": "豆包会员", "cost": "费用待核对", "renewal": "2026-12-15 到期"},
+                     {"name": "MiniMax", "cost": "490 元/年", "renewal": "2027-03-22 到期"}],
+            "ledger": [], "non_ai": [], "total_ai": "", "total_all": "",
+        }
+        with mock.patch.object(quota_report, "_load_finance", return_value=finance), \
+             mock.patch.object(quota_report, "_daily_deltas", return_value=[]):
+            for public in (False, True):
+                page = quota_report.render_html(rows, public=public)
+                self.assertNotIn("豆包", page)
+                for name in ("Kimi", "Grok", "MiniMax", "Antigravity · Gemini 组"):
+                    self.assertIn(name, page)
+                self.assertIn("Codex · d***@example.com", page)
+                self.assertIn("490 元/年", page)
+        self.assertFalse(quota_report._quota_hidden("Codex · doubao@example.com"))
+
+
 class CollectSourceTests(unittest.TestCase):
     def test_collect_includes_codex_auth_accounts(self):
         def row(label):
@@ -1066,7 +1099,8 @@ class CollectSourceTests(unittest.TestCase):
         self.assertIn("Codex · first@163.com", names)
         self.assertIn("Codex · second@hotmail.com", names)
         self.assertIn("MiniMax", names)
-        self.assertEqual(len(names), 8)
+        self.assertNotIn("豆包", names)
+        self.assertEqual(len(names), 7)
 
 
 if __name__ == "__main__":
