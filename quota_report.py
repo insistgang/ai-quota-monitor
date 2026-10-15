@@ -1178,28 +1178,49 @@ def _strip_md(s: str) -> str:
 
 
 def _load_finance() -> dict:
-    """从《大模型订阅与消费盘点.md》解析：订阅表 / 历史充值台账 / 非AI订阅 / 合计口径。"""
-    out = {"subs": [], "ledger": [], "non_ai": [], "total_ai": "", "total_all": ""}
+    """解析订阅、私有预存余额、历史充值、非 AI 订阅与合计口径。"""
+    out = {"subs": [], "prepaid": [], "ledger": [], "non_ai": [], "total_ai": "", "total_all": ""}
     try:
         text = FINANCE_MD.read_text(encoding="utf-8")
     except Exception:  # noqa: BLE001
         return out
     section = ""
+    prepaid_public_column = None
     for line in text.splitlines():
         if line.startswith("## 一、"):
             section = "subs"; continue
         if line.startswith("## 二、"):
             section = "ledger"; continue
+        if line == "## ChatGPT 预存余额与扣费计划（私密）":
+            prepaid_public_column = None
+            section = "prepaid"; continue
         if line.startswith("## "):
-            if section in ("subs", "ledger"):
+            if section in ("subs", "prepaid", "ledger"):
                 section = ""
         if section and line.startswith("|") and "---" not in line:
-            cells = [_strip_md(c) for c in line.strip().strip("|").split("|")]
+            cells = [
+                _strip_md(c.replace(r"\|", "|"))
+                for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))
+            ]
+            if section == "prepaid" and cells[0] == "账号":
+                prepaid_public_column = (
+                    cells.index("公开展示名", 6) if "公开展示名" in cells[6:] else None
+                )
             if section == "subs" and len(cells) >= 5 and cells[0] != "产品":
                 if "已停用" not in cells[1] and "已停用" not in cells[0]:
                     out["subs"].append({"name": cells[0], "cost": cells[2], "renewal": cells[4]})
             elif section == "ledger" and len(cells) >= 3 and cells[0] != "日期":
                 out["ledger"].append({"date": cells[0], "item": cells[1], "amount": cells[2]})
+            elif section == "prepaid" and len(cells) >= 6 and cells[0] != "账号":
+                account = dict(zip(
+                    ("name", "as_of", "balance", "debit", "covered", "next_topup"), cells[:6],
+                ))
+                account["public_name"] = (
+                    cells[prepaid_public_column]
+                    if prepaid_public_column is not None and len(cells) > prepaid_public_column
+                    else ""
+                )
+                out["prepaid"].append(account)
         m = re.search(r"AI 固定订阅合计（本人实付）：约\s*([\d.]+\s*元/月)", line)
         if m:
             out["total_ai"] = m.group(1)
@@ -1267,11 +1288,33 @@ def _countdown_pill(expiry: str | None) -> str:
 
 def _subs_html(public: bool) -> str:
     fin = _load_finance()
-    if not fin["subs"] and not fin["ledger"]:
+    prepaid_accounts = fin.get("prepaid", [])
+    if public:
+        prepaid_accounts = [
+            {**account, "name": account["public_name"]}
+            for account in prepaid_accounts if account.get("public_name")
+        ]
+    if not fin["subs"] and not fin["ledger"] and not prepaid_accounts:
         return ""
 
     def pub(s: str) -> str:
         return s.replace("Andy", "朋友") if public else s
+
+    prepaid_html = ""
+    if prepaid_accounts:
+        prepaid_cards = "".join(
+            f'<div class="scard"><div class="sname">{_html_text(r["name"])}</div>'
+            f'<div class="scost">余额 {_html_text(r["balance"])}</div>'
+            f'<div class="smeta">截至 {_html_text(r["as_of"])} · 每次扣费 {_html_text(r["debit"])}</div>'
+            f'<div class="meta">可覆盖扣费：{_html_text(r["covered"])}</div>'
+            f'<div class="meta">需在 {_html_text(r["next_topup"])} 扣费前补款</div></div>'
+            for r in prepaid_accounts
+        )
+        prepaid_html = (
+            '<h2>💰 ChatGPT 预存余额与扣费计划</h2>'
+            f'<div class="sgrid">{prepaid_cards}</div>'
+            '<div class="sub">TRY 为土耳其里拉。余额为所示日期的人工记录；扣费计划按每次金额不变估算，未来扣款尚未记为支出。</div>'
+        )
 
     cards = []
     for r in fin["subs"]:
@@ -1301,6 +1344,7 @@ def _subs_html(public: bool) -> str:
     return f"""<h2>💳 订阅 · 到期 · 续费</h2>
 {totals}
 <div class="sgrid">{''.join(cards)}</div>
+{prepaid_html}
 <h2>📒 消费台账（历史充值）</h2>
 <table class="ledger"><tr><td>日期</td><td>项目</td><td>金额</td></tr>{ledger_trs}</table>
 <h2>🧾 非 AI 固定订阅</h2>

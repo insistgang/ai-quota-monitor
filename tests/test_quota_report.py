@@ -617,6 +617,136 @@ class HtmlEscapingTests(unittest.TestCase):
         self.assertIn("08&lt;x&gt;", rendered)
 
 
+class PrepaidSubscriptionTests(unittest.TestCase):
+    FINANCE_TEXT = """## 一、当前在用订阅
+| 产品 | 档位/形式 | 费用 | 计费周期 | 刷新/到期时间 | 状态与证据 |
+|------|----------|------|----------|--------------|-----------|
+| ChatGPT ×2 | 土区订阅 | 150 元/月 | 月付 | 每月 2 日、每月 22 日 | 本人确认 |
+
+## ChatGPT 预存余额与扣费计划（私密）
+| 账号 | 记录日期 | 预存余额 | 每次扣费 | 可覆盖的扣费日 | 下次需补款的扣费日 |
+|------|----------|----------|----------|----------------|--------------------|
+| 私密共享账号 | 2026-07-15 | 800 TRY | 400 TRY | 2026-08-02、2026-09-02 | 2026-10-02 |
+| 私密本人账号 | 2026-07-15 | 1,200 TRY | 400 TRY | 2026-07-22、2026-08-22、2026-09-22 | 2026-10-22 |
+
+## 二、历史充值与一次性消费
+| 日期 | 项目 | 金额 | 备注 |
+|------|------|------|------|
+| 2026-02-02 | Kimi Agent | 948 元 | 年费 |
+"""
+
+    def test_private_prepaid_table_does_not_become_public_subscriptions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(self.FINANCE_TEXT, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path):
+                finance = quota_report._load_finance()
+
+        self.assertEqual(len(finance["subs"]), 1)
+        self.assertEqual(len(finance["ledger"]), 1)
+        self.assertEqual(len(finance["prepaid"]), 2)
+        self.assertEqual(finance["prepaid"][0]["balance"], "800 TRY")
+        self.assertEqual(finance["prepaid"][1]["next_topup"], "2026-10-22")
+
+    def test_balances_and_plans_are_visible_only_on_local_pages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(self.FINANCE_TEXT, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path), \
+                 mock.patch.object(quota_report, "LOG_CSV", Path(tmp) / "missing.csv"):
+                private_details = ("私密共享账号", "私密本人账号", "800 TRY",
+                                   "1,200 TRY", "2026-10-02", "2026-10-22")
+                for live in (False, True):
+                    local = quota_report.render_html([], live=live)
+                    for value in private_details:
+                        self.assertIn(value, local)
+                    self.assertIn("2026-07-22、2026-08-22、2026-09-22", local)
+                    self.assertIn("截至 2026-07-15", local)
+                for page in ("all", "overview", "history", "subscriptions"):
+                    public = quota_report.render_html([], public=True, page=page)
+                    for value in private_details:
+                        self.assertNotIn(value, public)
+
+    def test_private_prepaid_details_are_escaped_and_emails_are_masked(self):
+        text = self.FINANCE_TEXT.replace("私密本人账号", "<img src=x> owner@example.com")
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path):
+                local = quota_report._subs_html(public=False)
+
+        self.assertNotIn("<img", local)
+        self.assertNotIn("owner@example.com", local)
+        self.assertIn("&lt;img src=x&gt; o***@example.com", local)
+
+    def test_public_prepaid_records_use_only_explicit_public_labels(self):
+        text = self.FINANCE_TEXT.replace(
+            "| 下次需补款的扣费日 |\n", "| 下次需补款的扣费日 | 公开展示名 |\n",
+        ).replace(
+            "| 2026-10-02 |\n", "| 2026-10-02 | ChatGPT · 共享账号 |\n",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path), \
+                 mock.patch.object(quota_report, "LOG_CSV", Path(tmp) / "missing.csv"):
+                for page in ("all", "subscriptions"):
+                    public = quota_report.render_html([], public=True, page=page)
+                    self.assertIn("ChatGPT · 共享账号", public)
+                    self.assertIn("800 TRY", public)
+                    self.assertIn("2026-10-02", public)
+                    self.assertNotIn("私密共享账号", public)
+                    self.assertNotIn("私密本人账号", public)
+                    self.assertNotIn("1,200 TRY", public)
+                    self.assertNotIn("2026-10-22", public)
+                local = quota_report._subs_html(public=False)
+                self.assertIn("私密共享账号", local)
+                self.assertIn("私密本人账号", local)
+
+    def test_public_prepaid_label_is_escaped_and_email_is_masked(self):
+        text = self.FINANCE_TEXT.replace(
+            "| 下次需补款的扣费日 |\n", "| 下次需补款的扣费日 | 公开展示名 |\n",
+        ).replace(
+            "| 2026-10-02 |\n", "| 2026-10-02 | <img src=x> public@example.com |\n",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path):
+                public = quota_report._subs_html(public=True)
+
+        self.assertNotIn("<img", public)
+        self.assertNotIn("public@example.com", public)
+        self.assertNotIn("私密共享账号", public)
+        self.assertIn("&lt;img src=x&gt; p***@example.com", public)
+
+    def test_escaped_pipe_in_private_account_cannot_enable_public_display(self):
+        text = self.FINANCE_TEXT.replace("私密共享账号", r"私密账号 A \| B")
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path):
+                finance = quota_report._load_finance()
+                public = quota_report._subs_html(public=True)
+
+        self.assertEqual(finance["prepaid"][0]["name"], "私密账号 A | B")
+        self.assertNotIn("800 TRY", public)
+        self.assertNotIn("2026-10-02", public)
+
+    def test_extra_cell_without_public_header_cannot_authorize_public_display(self):
+        text = self.FINANCE_TEXT.replace(
+            "| 2026-10-02 |\n", "| 2026-10-02 | 未授权额外内容 |\n",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path):
+                public = quota_report._subs_html(public=True)
+
+        self.assertNotIn("800 TRY", public)
+        self.assertNotIn("未授权额外内容", public)
+
+
 class EmailPrivacyTests(unittest.TestCase):
     def test_static_live_and_public_pages_mask_cards_notes_errors_and_alerts(self):
         rows = [
