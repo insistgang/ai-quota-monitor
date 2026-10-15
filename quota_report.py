@@ -901,8 +901,10 @@ def _unhealthy_rows(rows: list[dict]) -> list[dict]:
 
 
 def _quota_hidden(name: str | None) -> bool:
-    """不再展示的额度源（已退订的 Grok Win、已停用的 Antigravity Claude/GPT 组），历史底账里一并过滤。"""
-    lowered = (name or "").lower()
+    """隐藏豆包、已退订的 Grok Win 和已停用的 Antigravity 组，历史展示同步过滤。"""
+    lowered = (name or "").strip().lower()
+    if lowered.startswith(("豆包", "doubao")):
+        return True
     return ("grok" in lowered and "win" in lowered) or (
         "antigravity" in lowered and "claude" in lowered
     )
@@ -1318,6 +1320,8 @@ def _subs_html(public: bool) -> str:
 
     cards = []
     for r in fin["subs"]:
+        if _quota_hidden(r["name"]):
+            continue
         name, cost, renewal = pub(r["name"]), pub(r["cost"]), pub(r["renewal"])
         expiry_m = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:到期|续费)", renewal)
         expiry = expiry_m.group(1) if expiry_m else None
