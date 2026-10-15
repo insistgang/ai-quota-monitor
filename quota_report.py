@@ -43,6 +43,10 @@ DOUBAO_QUOTA_CACHE = Path(os.environ.get(
     "DOUBAO_QUOTA_CACHE",
     str(HOME / ".cache/ai-quota-monitor/doubao-quota.json"),
 ))
+PUBLIC_HIDDEN_ACCOUNTS_PATH = Path(os.environ.get(
+    "QUOTA_PUBLIC_HIDDEN_ACCOUNTS",
+    str(HOME / ".cache/ai-quota-monitor/public-hidden-accounts.json"),
+))
 DOUBAO_APPLESCRIPT = Path(__file__).with_name("scripts") / "read_doubao_quota.applescript"
 HTTP_TIMEOUT = 15
 SSH_TIMEOUT = 20
@@ -901,13 +905,29 @@ def _unhealthy_rows(rows: list[dict]) -> list[dict]:
 
 
 def _quota_hidden(name: str | None) -> bool:
-    """隐藏豆包、已退订的 Grok Win 和已停用的 Antigravity 组，历史展示同步过滤。"""
+    """隐藏已退订的 Grok Win 和已停用的 Antigravity 组，历史展示同步过滤。"""
     lowered = (name or "").strip().lower()
-    if lowered.startswith(("豆包", "doubao")):
-        return True
     return ("grok" in lowered and "win" in lowered) or (
         "antigravity" in lowered and "claude" in lowered
     )
+
+
+def _public_hidden_codex_names() -> set[str]:
+    """从本机私有配置读取不公开的 Codex 账号，公开仓库不保存完整标识。"""
+    try:
+        data = json.loads(PUBLIC_HIDDEN_ACCOUNTS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("公开过滤配置缺失或不可读") from exc
+    emails = data.get("codex_emails") if isinstance(data, dict) else None
+    if not isinstance(emails, list) or not emails:
+        raise RuntimeError("公开过滤配置缺少账号列表")
+    if any(
+        not isinstance(email, str)
+        or re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()) is None
+        for email in emails
+    ):
+        raise RuntimeError("公开过滤配置包含无效邮箱")
+    return {f"Codex · {email.strip()}".casefold() for email in emails}
 
 
 def _visible_quota_rows(rows: list[dict]) -> list[dict]:
@@ -1406,7 +1426,7 @@ def _is_weekly_reset(previous: tuple[str, float, str], current: tuple[str, float
     return previous_pct - current_pct >= 20.0
 
 
-def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
+def _daily_deltas(days: int = 7, *, public: bool = False) -> list[tuple[str, list[dict]]]:
     """从 LOG_CSV 计算每源每日消耗（周计数口径）。
 
     普通日为当天末次快照 − 前一日末次快照；跨周重置时按重置前、后两段相加。
@@ -1415,6 +1435,7 @@ def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
     """
     if not LOG_CSV.exists():
         return []
+    hidden_names = _public_hidden_codex_names() if public else set()
     per: dict[tuple[str, str], list[tuple[str, float, str]]] = {}
     with open(LOG_CSV, encoding="utf-8") as f:
         for r in csv.reader(f):
@@ -1425,7 +1446,7 @@ def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
             except ValueError:
                 continue
             name = r[1].split("（")[0].strip()  # 合并标签改名（如 Kimi 本人 99/月→948/年）
-            if _quota_hidden(name):
+            if _quota_hidden(name) or name.casefold() in hidden_names:
                 continue
             reset = r[5] if len(r) > 5 else ""
             per.setdefault((r[0][:10], name), []).append((r[0], pct, reset))
@@ -1474,7 +1495,7 @@ def _daily_deltas(days: int = 7) -> list[tuple[str, list[dict]]]:
 def _history_html(public: bool, days: int = 7, controls: bool = False,
                   more_href: str = "") -> str:
     """每日消耗柱状图：按天分块，源按消耗降序，纯 CSS 横条。"""
-    history_days = _daily_deltas(days=days)
+    history_days = _daily_deltas(days=days, public=public)
     if not history_days:
         return ""
     blocks = []
@@ -1600,6 +1621,9 @@ def _history_filter_script() -> str:
 def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
                 public: bool = False, page: str = "all") -> str:
     rows = _visible_quota_rows(rows)
+    if public:
+        hidden_names = _public_hidden_codex_names()
+        rows = [row for row in rows if (row.get("name") or "").casefold() not in hidden_names]
     if page not in {"all", "overview", "history", "subscriptions"}:
         raise ValueError(f"unknown dashboard page: {page}")
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1755,6 +1779,7 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap}}
 
 def render_public_site(rows: list[dict], index_path: Path) -> None:
     """生成 GitHub Pages 的概览、每日消耗和订阅账单三个静态页面。"""
+    _public_hidden_codex_names()
     index_path.parent.mkdir(parents=True, exist_ok=True)
     pages = {
         "overview": index_path,
