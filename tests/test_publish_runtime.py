@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import call, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,33 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
     )
+
+
+def _init_publish_repo(repo: Path, *, index_content: str = "old-index") -> None:
+    (repo / "docs").mkdir(parents=True)
+    (repo / "quota_report.py").write_text(
+        "from pathlib import Path\n"
+        "count = Path('report-count.txt')\n"
+        "count.write_text(str(int(count.read_text()) + 1) if count.exists() else '1')\n"
+        "for name in ('index.html', 'history.html', 'subscriptions.html'):\n"
+        "    (Path('docs') / name).write_text(name, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    (repo / "docs" / "index.html").write_text(index_content, encoding="utf-8")
+    for name in ("history.html", "subscriptions.html"):
+        (repo / "docs" / name).write_text(name, encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "Quota Test")
+    _git(repo, "config", "user.email", "quota@example.invalid")
+    _git(repo, "add", "--", "quota_report.py", "docs")
+    _git(repo, "commit", "-q", "-m", "initial")
+
+
+def _add_pending_snapshot(repo: Path) -> str:
+    (repo / "docs" / "index.html").write_text("index.html", encoding="utf-8")
+    _git(repo, "add", "--", "docs/index.html")
+    _git(repo, "commit", "-q", "-m", "pending snapshot")
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
 class LaunchdEntrypointTests(unittest.TestCase):
@@ -162,6 +190,7 @@ class PublishRuntimeTests(unittest.TestCase):
                 _git(repo, "log", "-1", "--pretty=%s").stdout.strip(),
                 "chore: 每日额度快照 2026-08-21_1830",
             )
+            self.assertEqual(_git(repo, "rev-list", "--count", "HEAD").stdout.strip(), "2")
             self.assertEqual(
                 _git(repo, "diff", "--cached", "--name-only").stdout.strip(),
                 "notes.txt",
@@ -181,6 +210,130 @@ class PublishRuntimeTests(unittest.TestCase):
                     "1",
                 ],
             )
+
+    def test_push_retries_transient_failures_with_timeout_without_regenerating(self):
+        publish_runtime = _load_publish_runtime()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_publish_repo(repo)
+            real_run = publish_runtime._run
+            push_attempts = []
+
+            def flaky_run(command, **kwargs):
+                if command[:2] == ("git", "push"):
+                    push_attempts.append((tuple(command), kwargs))
+                    if len(push_attempts) == 1:
+                        raise subprocess.CalledProcessError(1, command)
+                    if len(push_attempts) == 2:
+                        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                    return subprocess.CompletedProcess(command, 0)
+                return real_run(command, **kwargs)
+
+            with patch.object(publish_runtime, "_run", side_effect=flaky_run), \
+                    patch("time.sleep") as sleep:
+                committed = publish_runtime.publish(
+                    repo,
+                    push=True,
+                    now=dt.datetime(2026, 8, 21, 18, 30),
+                )
+
+            self.assertTrue(committed)
+            self.assertEqual(len(push_attempts), 3)
+            self.assertEqual([item[1]["timeout"] for item in push_attempts], [60, 60, 60])
+            self.assertEqual(sleep.call_args_list, [call(2), call(2)])
+            self.assertEqual((repo / "report-count.txt").read_text(), "1")
+            self.assertEqual(
+                _git(repo, "log", "-1", "--pretty=%s").stdout.strip(),
+                "chore: 每日额度快照 2026-08-21_1830",
+            )
+
+    def test_final_push_failure_raises_and_keeps_snapshot_commit(self):
+        publish_runtime = _load_publish_runtime()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_publish_repo(repo)
+            real_run = publish_runtime._run
+            push_attempts = []
+
+            def timeout_every_push(command, **kwargs):
+                if command[:2] == ("git", "push"):
+                    push_attempts.append((tuple(command), kwargs))
+                    raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                return real_run(command, **kwargs)
+
+            with patch.object(publish_runtime, "_run", side_effect=timeout_every_push), \
+                    patch("time.sleep") as sleep:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    publish_runtime.publish(
+                        repo,
+                        push=True,
+                        now=dt.datetime(2026, 8, 21, 18, 30),
+                    )
+
+            self.assertEqual(len(push_attempts), 3)
+            self.assertEqual(sleep.call_args_list, [call(2), call(2)])
+            self.assertEqual((repo / "report-count.txt").read_text(), "1")
+            self.assertEqual(
+                _git(repo, "log", "-1", "--pretty=%s").stdout.strip(),
+                "chore: 每日额度快照 2026-08-21_1830",
+            )
+            self.assertEqual(_git(repo, "rev-list", "--count", "HEAD").stdout.strip(), "2")
+            self.assertEqual(_git(repo, "diff", "--cached", "--name-only").stdout, "")
+            self.assertEqual(
+                _git(repo, "status", "--porcelain").stdout.strip(),
+                "?? report-count.txt",
+            )
+
+    def test_unchanged_pages_still_push_existing_commit_when_enabled(self):
+        publish_runtime = _load_publish_runtime()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_publish_repo(repo)
+            pending_head = _add_pending_snapshot(repo)
+            real_run = publish_runtime._run
+            push_attempts = []
+
+            def record_push(command, **kwargs):
+                if command[:2] == ("git", "push"):
+                    push_attempts.append((tuple(command), kwargs))
+                    return subprocess.CompletedProcess(command, 0)
+                return real_run(command, **kwargs)
+
+            with patch.object(publish_runtime, "PUSH_REMOTE", "temporary-remote"), \
+                    patch.object(publish_runtime, "_run", side_effect=record_push):
+                committed = publish_runtime.publish(repo, push=True)
+
+            self.assertFalse(committed)
+            self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), pending_head)
+            self.assertEqual(len(push_attempts), 1)
+            self.assertEqual(
+                push_attempts[0][0],
+                ("git", "push", "temporary-remote", "main"),
+            )
+            self.assertNotIn("--force", push_attempts[0][0])
+            self.assertEqual((repo / "report-count.txt").read_text(), "1")
+
+    def test_unchanged_pages_with_push_disabled_do_not_attempt_push(self):
+        publish_runtime = _load_publish_runtime()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_publish_repo(repo)
+            pending_head = _add_pending_snapshot(repo)
+            real_run = publish_runtime._run
+            push_attempts = []
+
+            def record_push(command, **kwargs):
+                if command[:2] == ("git", "push"):
+                    push_attempts.append(tuple(command))
+                return real_run(command, **kwargs)
+
+            with patch.object(publish_runtime, "_run", side_effect=record_push):
+                committed = publish_runtime.publish(repo, push=False)
+
+            self.assertFalse(committed)
+            self.assertEqual(push_attempts, [])
+            self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), pending_head)
+            self.assertEqual((repo / "report-count.txt").read_text(), "1")
 
     def test_runtime_smoke_mode_is_read_only_and_returns_pass_marker(self):
         self.assertTrue(PUBLISH_RUNTIME.is_file(), "缺少集中式 Python 发布入口")

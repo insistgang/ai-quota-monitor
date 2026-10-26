@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""quota_report.py — AI 额度监控表 v2（只读，不修改任何外部状态）
+"""quota_report.py — AI 额度监控表（查询用量，不发送模型任务或主动重置额度）
+
+配置 Sub2API 后，已映射来源改由服务器读取；未配置时保留以下本机采集器。
 
 监控对象（统一口径：本周已用 + 周重置）：
 - Kimi（本人 99/月）：KimiCodeBar credentials 里 alias=Leo-usage 的 key
@@ -26,6 +28,7 @@ import html
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -34,6 +37,8 @@ import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+
+import sub2api_quota
 
 HOME = Path.home()
 LOG_CSV = Path(__file__).with_name("quota-log.csv")
@@ -47,9 +52,12 @@ PUBLIC_HIDDEN_ACCOUNTS_PATH = Path(os.environ.get(
     "QUOTA_PUBLIC_HIDDEN_ACCOUNTS",
     str(HOME / ".cache/ai-quota-monitor/public-hidden-accounts.json"),
 ))
+SUB2API_URL = "http://127.0.0.1:18080/v1/usage"
+SUB2API_KEYS = HOME / ".codex/providers/sub2api-edge/keys.env"
 DOUBAO_APPLESCRIPT = Path(__file__).with_name("scripts") / "read_doubao_quota.applescript"
 HTTP_TIMEOUT = 15
 SSH_TIMEOUT = 20
+SOURCE_MAX_AGE_SECONDS = 5 * 60
 
 
 def _http_json(url: str, key: str) -> dict:
@@ -72,6 +80,22 @@ def _fmt_epoch(ts) -> str:
         return dt.datetime.fromtimestamp(int(ts)).strftime("%m-%d %H:%M")
     except Exception:  # noqa: BLE001
         return "?"
+
+
+def _snapshot_stale(timestamp) -> bool:
+    """只有近五分钟、时间可验证的源快照可跳过实时查询。"""
+    try:
+        if isinstance(timestamp, str) and "T" in timestamp:
+            parsed = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return True
+            captured = parsed.timestamp()
+        else:
+            captured = float(timestamp)
+        age = time.time() - captured
+        return not -60 <= age <= SOURCE_MAX_AGE_SECONDS
+    except (TypeError, ValueError, OverflowError):
+        return True
 
 
 # ---------- 数据源 ----------
@@ -547,16 +571,22 @@ def _codex_row(label: str, rl: dict, note: str = "") -> dict:
     return row
 
 
+def _agy_bin() -> str:
+    return shutil.which("agy") or str(HOME / ".local/bin/agy")
+
+
 def _tmux_slash_probe(cmd: str, slash: str, wait_boot: int = 12, wait_panel: int = 5,
                       pre_enter: bool = False) -> str | None:
     """通用：tmux 驱动 TUI 执行 slash 命令并截屏。pre_enter 用于先按一次回车（如 agy 的信任确认）。"""
     if not shutil.which("tmux"):
         return None
-    sess = f"quota_probe_{cmd.replace('/', '_').replace(' ', '_')}"
+    sess = f"quota_probe_{Path(cmd).name.replace(' ', '_')}"
     subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True)
+    env = os.environ.copy()
+    env["PATH"] = f"{HOME}/.local/bin:{HOME}/.grok/bin:{env.get('PATH', '')}"
     try:
         subprocess.run(["tmux", "new-session", "-d", "-s", sess, "-x", "200", "-y", "50", cmd],
-                       check=True, timeout=15, capture_output=True)
+                       env=env, check=True, timeout=15, capture_output=True)
         time.sleep(wait_boot)
         if pre_enter:
             subprocess.run(["tmux", "send-keys", "-t", sess, "Enter"],
@@ -594,7 +624,11 @@ def _agy_parse_group(text: str, marker: str) -> dict | None:
         r"(?:[\d.]+%\s+remaining\s*·\s*)?Refreshes in ([^\n]+)",
         seg,
     )
-    m_5h = re.search(r"Five Hour Limit Remaining\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*[\d.]+% remaining · Refreshes in ([^\n]+)", seg)
+    m_5h = re.search(
+        r"Five Hour Limit Remaining\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*"
+        r"(?:[\d.]+%\s+remaining\s*·\s*)?Refreshes in ([^\n]+)",
+        seg,
+    )
     if not m_week:
         return None
     week_left = float(m_week.group(1))
@@ -612,8 +646,9 @@ def _agy_parse_group(text: str, marker: str) -> dict | None:
 
 
 def _agy() -> list[dict]:
-    """Antigravity：tmux 驱动 agy TUI /usage，只取 GEMINI 组（Claude/GPT 组已停用，不采集）。"""
-    text = _tmux_slash_probe("agy", "/usage", wait_boot=10, wait_panel=8, pre_enter=True)
+    """Antigravity：从真实 TUI /usage 面板读取官方真实周额度与 5h 窗（只取 Gemini 组）。"""
+    bin_path = _agy_bin()
+    text = _tmux_slash_probe(bin_path, "/usage", wait_boot=12, wait_panel=6, pre_enter=False)
     if not text:
         return [{"name": "Antigravity · Gemini 组", "status": "TUI 探测失败"}]
     g = _agy_parse_group(text, "GEMINI MODELS")
@@ -661,33 +696,124 @@ def _codex_auth_accounts() -> list[dict]:
             note_parts.append(str(plan).capitalize())
         if acct.get("active"):
             note_parts.append("当前活跃")
-        if refresh and refresh.get("status") != "ok":
+        refresh_failed = bool(refresh and refresh.get("status") != "ok")
+        if refresh_failed:
             note_parts.append("API 刷新失败，数据可能滞后")
         updated = usage.get("updated_at")
         if updated:
             note_parts.append(f"数据 {_fmt_epoch(updated)}")
-        rows.append(_codex_row(label, usage, note=" · ".join(note_parts)))
+        stale = _snapshot_stale(updated)
+        if stale:
+            note_parts.append("快照过期" if updated else "数据时间未知")
+        row = _codex_row(label, usage, note=" · ".join(note_parts))
+        row["stale"] = refresh_failed or stale or usage.get("source") == "cache"
+        row["cache_fallback"] = refresh_failed or usage.get("source") == "cache"
+        row["captured_at"] = updated
+        rows.append(row)
     if not rows:
         return [{"name": "Codex（codex-auth）", "status": "codex-auth 未登录任何账号"}]
     return rows
 
 
+def _load_sub2api_key(group: str = "GROK") -> str | None:
+    if not SUB2API_KEYS.exists():
+        return None
+    try:
+        for line in SUB2API_KEYS.read_text(encoding="utf-8").splitlines():
+            line = line.strip().removeprefix("export ")
+            if "=" in line and line.split("=", 1)[0].strip() == group:
+                parts = shlex.split(line.split("=", 1)[1], comments=True)
+                return parts[0] if parts else None
+    except Exception:
+        return None
+    return None
+
+
+def _fetch_sub2api_group_usage(group: str, label: str, custom_model_name: str | None = None) -> dict | None:
+    """通用：从 Sub2API 边缘网关 /v1/usage 读取指定分组的实时用量（毫秒级，无阻塞）。"""
+    key = _load_sub2api_key(group)
+    if not key:
+        return None
+    try:
+        req = urllib.request.Request(SUB2API_URL, headers={"Authorization": f"Bearer {key}"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        today = data.get("usage", {}).get("today", {})
+        rem = data.get("remaining")
+        stats = {m.get("model"): m for m in data.get("model_stats", []) if isinstance(m, dict)}
+
+        parts = []
+        if rem is not None:
+            parts.append(f"余额 ${rem:.2f}")
+        if today.get("requests"):
+            parts.append(f"今日 {today.get('requests')}次/共${today.get('cost', 0):.2f}")
+
+        if custom_model_name and custom_model_name in stats:
+            m_stat = stats[custom_model_name]
+            parts.append(f"{custom_model_name} {m_stat.get('requests', 0)}次/${m_stat.get('cost', 0):.2f}")
+
+        return {
+            "name": label,
+            "status": "ok",
+            "used_pct": 0.0,
+            "used_text": "实时可用",
+            "reset": "随用随充",
+            "note": " · ".join(parts) or "Sub2API 实时网关",
+            "fiveh_pct": None,
+            "fiveh_text": None,
+            "fiveh_reset": None,
+        }
+    except Exception:
+        return None
+
+
+def _grok_log_row(label: str) -> dict | None:
+    log_file = HOME / ".grok/logs/unified.jsonl"
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="ignore")
+        return _grok_row_from_billing_log(text, label)
+    except OSError:
+        return None
+
+
 def _grok(label: str) -> dict:
-    """tmux 驱动 grok TUI 的 /usage 面板，截取 Weekly limit；结束杀临时会话。"""
+    """复用近五分钟的 billing 快照；过期则实时探测，失败时明确标记缓存。"""
+    cached = _grok_log_row(label)
+    if cached and not cached["stale"]:
+        return cached
+    live = _grok_tui(label)
+    if live.get("status") == "ok" and not live.get("stale"):
+        return live
+    if cached:
+        return {
+            **cached, "stale": True, "cache_fallback": True,
+            "note": f"{cached['note']} · 刷新失败：{live.get('status', '无新数据')}",
+        }
+    return live
+
+
+def _grok_tui(label: str) -> dict:
+    """只查询官方 /usage；临时终端使用独立会话，不干扰正在使用的 Grok。"""
     if not shutil.which("tmux"):
         return {"name": label, "status": "tmux 不可用，无法探测"}
-    sess = "grok_quota_probe"
-    subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True)
+    sess = f"grok_quota_probe_{os.getpid()}"
+    grok_bin = shutil.which("grok") or str(HOME / ".grok/bin/grok")
     try:
-        subprocess.run(["tmux", "new-session", "-d", "-s", sess, "-x", "200", "-y", "50", "grok"],
+        subprocess.run(["tmux", "new-session", "-d", "-s", sess, "-x", "200", "-y", "50",
+                        "-c", "/tmp", f"{shlex.quote(grok_bin)} --cwd /tmp"],
                        check=True, timeout=15, capture_output=True)
-        time.sleep(12)
+        time.sleep(5)
         subprocess.run(["tmux", "send-keys", "-t", sess, "/usage", "Enter"],
                        check=True, timeout=5, capture_output=True)
-        time.sleep(6)
+        time.sleep(4)
         out = subprocess.run(["tmux", "capture-pane", "-t", sess, "-p"],
                              capture_output=True, timeout=5)
         text = out.stdout.decode("utf-8", errors="ignore")
+        refreshed = _grok_log_row(label)
+        if refreshed and not refreshed["stale"]:
+            return refreshed
         if "Weekly limit" not in text:
             return {"name": label, "status": "未捕获到 /usage 面板"}
         seg = text.split("Weekly limit", 1)[1][:1500]
@@ -702,6 +828,8 @@ def _grok(label: str) -> dict:
             "used_pct": float(m_pct.group(1)),
             "used_text": f"{m_pct.group(1)}%",
             "reset": reset,
+            "note": "SuperGrok · 实时查询 " + dt.datetime.now().strftime("%m-%d %H:%M"),
+            "captured_at": time.time(),
         }
     except Exception as e:  # noqa: BLE001
         return {"name": label, "status": f"探测失败: {type(e).__name__}"}
@@ -747,6 +875,8 @@ def _grok_row_from_billing_log(text: str, label: str, *, note: str = "") -> dict
         used = float(pct)
     except (TypeError, ValueError):
         return None
+    if not 0 <= used <= 100:
+        return None
     return {
         "name": label,
         "status": "ok",
@@ -754,6 +884,8 @@ def _grok_row_from_billing_log(text: str, label: str, *, note: str = "") -> dict
         "used_text": f"{used:g}%",
         "reset": _fmt_utc(end) if end else "?",
         "note": " · ".join(bits),
+        "captured_at": best_ts,
+        "stale": _snapshot_stale(best_ts),
     }
 
 
@@ -793,8 +925,7 @@ def _mmx_bin() -> str | None:
 
 
 def _minimax(label: str) -> dict:
-    """MiniMax：本机 mmx-cli 的 `mmx quota show`（JSON 输出）。
-    取 model_name=general：current_weekly_remaining_percent / current_interval_remaining_percent（5h 窗）。"""
+    """MiniMax：本机 mmx-cli 的 `mmx quota show` 读取官方真实账号剩余额度。"""
     mmx = _mmx_bin()
     if not mmx:
         return {"name": label, "status": "mmx-cli 未找到"}
@@ -905,10 +1036,12 @@ def _unhealthy_rows(rows: list[dict]) -> list[dict]:
 
 
 def _quota_hidden(name: str | None) -> bool:
-    """隐藏已退订的 Grok Win 和已停用的 Antigravity 组，历史展示同步过滤。"""
+    """隐藏已退订的 Grok Win、已停用的 Antigravity 组以及已取消的豆包，历史展示同步过滤。"""
     lowered = (name or "").strip().lower()
-    return ("grok" in lowered and "win" in lowered) or (
-        "antigravity" in lowered and "claude" in lowered
+    return (
+        ("grok" in lowered and "win" in lowered)
+        or ("antigravity" in lowered and "claude" in lowered)
+        or ("豆包" in lowered)
     )
 
 
@@ -935,21 +1068,40 @@ def _visible_quota_rows(rows: list[dict]) -> list[dict]:
 
 
 def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
-    mine, andy = _load_kimi_keys()
+    source = os.environ.get("QUOTA_SOURCE", "auto")
+    if source not in {"auto", "local", "sub2api"}:
+        raise sub2api_quota.ConfigError("QUOTA_SOURCE 只能为 auto、local 或 sub2api")
+    config = sub2api_quota.load_config() if source != "local" else None
+    if source == "sub2api" and config is None:
+        raise sub2api_quota.ConfigError("尚未配置 Sub2API 额度数据源")
+    rows, covered = [], set()
+    if config:
+        covered = {a["collector"] for a in config["accounts"]}
+        covered.update(a["collector"] for a in config.get("unmapped_accounts", []))
+        rows = sub2api_quota.collect(config, retry_attempts=retry_attempts, retry_delay=retry_delay)
+
+    keys = None
+
+    def kimi_row(index: int, label: str) -> list[dict]:
+        nonlocal keys
+        if keys is None:
+            keys = _load_kimi_keys()
+        return [_kimi_quota(label, keys[index])]
+
     batches = [
-        ("kimi_mine", lambda: [_kimi_quota("Kimi · 本人（948/年）", mine)]),
-        ("kimi_andy", lambda: [_kimi_quota("Kimi · Andy（199/月）", andy)]),
-        ("doubao", lambda: [_doubao_quota()]),
+        ("kimi_mine", lambda: kimi_row(0, "Kimi · 本人（948/年）")),
+        ("kimi_andy", lambda: kimi_row(1, "Kimi · Andy（199/月）")),
         ("codex_auth", _codex_auth_accounts),
         ("grok", lambda: [_grok("Grok · SuperGrok")]),
         ("minimax", lambda: [_minimax("MiniMax")]),
         ("antigravity", _agy),
     ]
-    return _visible_quota_rows(_collect_batches_with_retries(
-        batches,
+    rows.extend(_collect_batches_with_retries(
+        [(name, collector) for name, collector in batches if name not in covered],
         retry_attempts=retry_attempts,
         retry_delay=retry_delay,
     ))
+    return _visible_quota_rows(rows)
 
 
 # ---------- 排序 / 刷新提醒 ----------
@@ -961,11 +1113,17 @@ _WEEKLY_SOON_H = 36
 _FIVEH_SOON_H = 3
 
 
-def _remain_pct(r: dict, key: str = "used_pct") -> float | None:
-    pct = r.get(key)
-    if pct is None:
-        return None
-    return max(0.0, min(100.0, 100.0 - float(pct)))
+def _remain_pct(r: dict, key: str | None = None) -> float | None:
+    if key is not None:
+        pct = r.get(key)
+        return max(0.0, min(100.0, 100.0 - float(pct))) if pct is not None else None
+    pct = r.get("used_pct")
+    if pct is not None:
+        return max(0.0, min(100.0, 100.0 - float(pct)))
+    fp = r.get("fiveh_pct")
+    if fp is not None:
+        return max(0.0, min(100.0, 100.0 - float(fp)))
+    return None
 
 
 def _parse_reset(s: str | None) -> dt.datetime | None:
@@ -1119,6 +1277,14 @@ def render(rows: list[dict]) -> str:
             lines.append(f"- **{r['name']}**：{r['status']}")
             continue
         rem = _remain_pct(r)
+        if r.get("used_pct") is None and r.get("fiveh_text"):
+            window_label = r.get("fiveh_label", "5h 窗")
+            rem_s = f"，剩 {rem:g}%" if rem is not None else ""
+            s = f"- **{r['name']}**：{window_label}已用 {r['fiveh_text']}{rem_s}，重置 {r.get('fiveh_reset', '?')}"
+            if r.get("note"):
+                s += f"，{r['note']}"
+            lines.append(s)
+            continue
         rem_s = ""
         if rem is not None and f"剩 {rem:g}%" not in str(r.get("used_text") or ""):
             rem_s = f"，剩 {rem:g}%"
@@ -1157,18 +1323,29 @@ def _card(r: dict, alert: dict | None = None) -> str:
     if r.get("status") != "ok":
         return f"""<div class="card"><div class="top"><span class="name">{name}</span>
 <span class="pill bad">异常</span></div><div class="msg">{_html_text(r['status'])}</div></div>"""
-    pct = r.get("used_pct")
     rem = _remain_pct(r)
-    pct_txt = f"{pct:g}%" if pct is not None else "—"
-    rem_txt = f"剩 {rem:g}%" if rem is not None else ""
-    c = _color(pct)
-    fiveh = ""
-    if r.get("fiveh_text"):
-        fp = r.get("fiveh_pct")
-        fc = _color(fp)
+    # 没有周额度、只有短时/5h 窗口的模型（如 MiniMax）：主卡片直接展示短时窗口，避免显示空的"本周已用 未提供"
+    if r.get("used_pct") is None and r.get("fiveh_text"):
+        pct = r.get("fiveh_pct")
+        pct_txt = _html_text(r["fiveh_text"])
+        rem_txt = f"剩 {rem:g}%" if rem is not None else ""
+        c = _color(pct)
         window_label = _html_text(r.get("fiveh_label", "5h 窗"))
-        fiveh = f"""<div class="sub">{window_label}</div>
-<div class="bar small"><div class="fill" style="width:{fp or 0}%;background:{fc}"></div></div>
+        meta_line = f"{window_label}已用 {pct_txt} · 重置 {_html_text(r.get('fiveh_reset', '?'))}"
+        fiveh = ""
+    else:
+        pct = r.get("used_pct")
+        pct_txt = f"{pct:g}%" if pct is not None else "—"
+        rem_txt = f"剩 {rem:g}%" if rem is not None else ""
+        c = _color(pct)
+        meta_line = f"本周已用 {_html_text(r.get('used_text', '?'))} · 重置 {_html_text(r.get('reset', '?'))}"
+        fiveh = ""
+        if r.get("fiveh_text"):
+            fp = r.get("fiveh_pct")
+            fc = _color(fp)
+            window_label = _html_text(r.get("fiveh_label", "5h 窗"))
+            fiveh = f"""<div class="sub">{window_label}</div>
+<div class="bar small"><div class="fill" style="width:{min(100, max(0, fp or 0))}%;background:{fc}"></div></div>
 <div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div>"""
     note = f"<div class='meta dim'>{_html_text(r['note'])}</div>" if r.get("note") else ""
     urgent = " urgent" if alert else ""
@@ -1185,8 +1362,8 @@ def _card(r: dict, alert: dict | None = None) -> str:
 {pill}</div>
 <div class="pct" style="color:{c}">{pct_txt}</div>
 <div class="remain">{rem_txt}</div>
-<div class="bar"><div class="fill" style="width:{pct or 0}%;background:{c}"></div></div>
-<div class="meta">本周已用 {_html_text(r.get('used_text', '?'))} · 重置 {_html_text(r.get('reset', '?'))}</div>
+<div class="bar"><div class="fill" style="width:{min(100, max(0, pct or 0))}%;background:{c}"></div></div>
+<div class="meta">{meta_line}</div>
 {fiveh}{note}</div>"""
 
 
@@ -1439,7 +1616,7 @@ def _daily_deltas(days: int = 7, *, public: bool = False) -> list[tuple[str, lis
     per: dict[tuple[str, str], list[tuple[str, float, str]]] = {}
     with open(LOG_CSV, encoding="utf-8") as f:
         for r in csv.reader(f):
-            if len(r) < 4 or not r[0] or not r[0][0].isdigit():
+            if len(r) < 4 or not r[0] or not r[0][0].isdigit() or r[2] != "ok":
                 continue
             try:
                 pct = float(r[3])
@@ -1566,25 +1743,52 @@ def _nav_html(active: str) -> str:
     return '<nav class="nav" aria-label="页面导航">' + "".join(items) + "</nav>"
 
 
-def _freshness_html(now: str) -> str:
-    """标签页长期打开时，仅提示有新版，不强制刷新打断阅读位置。"""
+def _freshness_html(now: str, *, auto_update: bool = False) -> str:
+    """概览页原位更新；其他页保留筛选和阅读状态，并提示新版。"""
     return f'''<div id="updateNotice" class="update-notice" data-current="{_html_text(now)}" hidden>
 发现有新数据 <button type="button" id="reloadLatest">点击更新</button></div>
 <script>
 (()=>{{
   const notice=document.getElementById('updateNotice');
-  const current=notice.dataset.current;
+  let current=notice.dataset.current;
+  let checking=false;
   async function checkLatest(){{
+    if(checking || document.hidden) return;
+    checking=true;
     try{{
-      const response=await fetch('index.html',{{cache:'no-store'}});
-      const latest=new DOMParser().parseFromString(await response.text(),'text/html')
-        .querySelector('meta[name="quota-generated-at"]')?.content;
-      if(latest && latest!==current) notice.hidden=false;
-    }}catch(_error){{}}
+      const url=new URL(location.href);
+      url.searchParams.set('_quota_check',Math.floor(Date.now()/60000));
+      const response=await fetch(url,{{cache:'no-store',signal:AbortSignal.timeout(15000)}});
+      if(!response.ok) return;
+      const updated=new DOMParser().parseFromString(await response.text(),'text/html');
+      const latest=updated.querySelector('meta[name="quota-generated-at"]')?.content;
+      if(!latest || latest<=current) return;
+      const content=document.getElementById('quotaContent');
+      const replacement=updated.getElementById('quotaContent');
+      const timestamp=updated.querySelector('.ts');
+      if({str(auto_update).lower()} && content && replacement && timestamp){{
+        const scrollY=window.scrollY;
+        content.replaceChildren(...replacement.childNodes);
+        document.querySelector('.ts').textContent=timestamp.textContent;
+        document.title=updated.title;
+        document.querySelector('meta[name="quota-generated-at"]').content=latest;
+        current=latest;
+        notice.dataset.current=latest;
+        notice.hidden=true;
+        window.scrollTo(0,scrollY);
+      }}else{{
+        notice.hidden=false;
+      }}
+    }}catch(_error){{}}finally{{checking=false;}}
   }}
-  document.getElementById('reloadLatest').addEventListener('click',()=>location.reload());
+  document.getElementById('reloadLatest').addEventListener('click',()=>{{
+    const url=new URL(location.href);
+    url.searchParams.set('_quota_check',Date.now());
+    location.replace(url);
+  }});
   document.addEventListener('visibilitychange',()=>{{if(!document.hidden) checkLatest();}});
-  setInterval(checkLatest,15*60*1000);
+  setInterval(checkLatest,60*1000);
+  checkLatest();
 }})();
 </script>'''
 
@@ -1679,7 +1883,7 @@ async function poll(){
 
     split_site = page != "all"
     navigation = _nav_html(page) if split_site else ""
-    freshness = _freshness_html(now) if split_site else ""
+    freshness = _freshness_html(now, auto_update=page == "overview") if split_site else ""
     html = f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <title>{title} · {now}</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="quota-generated-at" content="{now}">
@@ -1769,7 +1973,7 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap}}
 {navigation}
 <h1>{heading}</h1>
 <div class="ts">更新于 {now} · {"公开快照 · 每小时自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · {detail}</div>
-{content}
+<main id="quotaContent">{content}</main>
 {freshness}
 </body></html>"""
     if path is not None:
@@ -1797,7 +2001,21 @@ _STATE_LOCK = threading.Lock()
 
 
 def _refresh_state(log: bool = True) -> None:
-    rows = collect()
+    try:
+        rows = collect()
+    except sub2api_quota.ConfigError as exc:
+        with _STATE_LOCK:
+            _STATE["updating"] = False
+            if not _STATE["rows"]:
+                _STATE["rows"] = [{"name": "Sub2API", "status": str(exc)}]
+            else:
+                _STATE["rows"] = [
+                    {**row, "stale": True, "cache_fallback": True,
+                     "note": "配置无效，保留上次快照"}
+                    if row.get("status") == "ok" else row
+                    for row in _STATE["rows"]
+                ]
+        return
     with _STATE_LOCK:
         _STATE["rows"] = rows
         _STATE["updating"] = False
@@ -1863,7 +2081,8 @@ def append_log(rows: list[dict]) -> None:
             w.writerow(["ts", "name", "status", "used_pct", "used_text", "reset", "fiveh_text"])
         ts = dt.datetime.now().isoformat(timespec="seconds")
         for r in rows:
-            w.writerow([ts, r["name"], r["status"], r.get("used_pct", ""),
+            status = "stale" if r.get("stale") else r["status"]
+            w.writerow([ts, r["name"], status, r.get("used_pct", ""),
                         r.get("used_text", ""), r.get("reset", ""), r.get("fiveh_text", "")])
 
 
@@ -1917,10 +2136,14 @@ def main() -> int:
     if args.serve:
         serve(args.port)
         return 0
-    rows = collect(
-        retry_attempts=max(0, args.retry_failures),
-        retry_delay=max(0, args.retry_delay),
-    )
+    try:
+        rows = collect(
+            retry_attempts=max(0, args.retry_failures),
+            retry_delay=max(0, args.retry_delay),
+        )
+    except sub2api_quota.ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     unhealthy = _unhealthy_rows(rows)
     if args.max_unhealthy >= 0 and len(unhealthy) > args.max_unhealthy:
         names = "、".join(str(row.get("name") or "未知来源") for row in unhealthy)

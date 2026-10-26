@@ -8,8 +8,8 @@
 
 项目围绕五条原则设计：
 
-1. **周额度优先**：主卡片统一展示本周已用和剩余比例，方便跨产品比较。
-2. **短时窗口只作补充**：5 小时窗或“当前时段”显示为子进度条，不混入每日周额度消耗。
+1. **周额度优先**：主卡片展示供应商实际提供的周已用和剩余比例；没有周窗口时显示未知。
+2. **其他窗口独立展示**：5 小时窗、“当前时段”或模型窗口显示为子进度条，不混入每日周额度消耗。
 3. **不发模型任务**：所有查询都是只读接口、状态命令或官网可见 DOM，不发送提示词。
 4. **宁可明确使用缓存，也不伪装实时**：采集失败时保留最后一份有效数字，但停止提醒并标明失败原因。
 5. **公开内容最小化**：只发布用户确认可以公开的额度、账单和汇总；凭据、原始 DOM、本地会话及详细日志不进入仓库。
@@ -21,9 +21,11 @@ flowchart LR
     A[launchd<br/>09:30–23:30 每小时] --> B[~/.local/bin/quota-publish]
     B --> C[publish_runtime.py]
     C --> D[quota_report.py]
-    D --> E1[Kimi / MiniMax / Codex<br/>只读接口或 CLI]
-    D --> E2[Grok / Antigravity<br/>本地 TUI 状态]
-    D --> E3[豆包<br/>刷新额度页 + 可见 DOM]
+    D --> S[已配置账号<br/>SSH 到 Sub2API 服务器查询]
+    D --> E1[未覆盖或本机模式<br/>Kimi / MiniMax / Codex 原采集器]
+    D --> E2[未覆盖或本机模式<br/>Grok / Antigravity 原采集器]
+    D --> E3[豆包独立 DOM 采集器<br/>沿用既有停用规则]
+    S --> F
     E1 --> F[统一额度行]
     E2 --> F
     E3 --> F
@@ -43,12 +45,14 @@ flowchart LR
 
 | 数据源 | 方式 | 是否产生模型 token | 主要限制 |
 |---|---|---:|---|
-| Kimi for Coding | 官方 usage API，只读已有使用量 | 否 | 依赖本地已配置的账号凭据 |
-| 豆包个人会员 | 刷新已登录的额度管理页，读取可见 DOM | 否 | Chrome、固定标签页和 Apple 事件 JavaScript 必须可用 |
-| Codex（codex-auth 多账号） | `codex-auth list --json` 官方额度接口，一次读取全部已登录账号的 5h/周窗 | 否 | codex-auth 已登录各账号 |
-| Grok · SuperGrok（Mac） | 隐藏 TUI 读取 `/usage` 状态面板 | 否 | CLI 需要已登录 |
-| MiniMax | 官方 CLI 的 quota JSON | 否 | CLI 需要已登录 |
-| Antigravity | 隐藏 TUI 读取 `/usage` 状态面板，只取 Gemini 组（Claude/GPT 组已停用） | 否 | CLI 需要已登录 |
+| Kimi for Coding | Sub2API CN 额度接口 | 否 | 配置服务器账号映射；明确区分 5h 与周窗口 |
+| 豆包个人会员 | 保留可见 DOM 采集器，当前工作区未启用 | 否 | 原 Chrome 与权限要求保持不变 |
+| Codex（OpenAI 多账号） | 在服务器读取 Sub2API 当前凭据，GET 官方用量 | 否 | 不调用会触发模型探针或自动重置的管理路径 |
+| Grok · SuperGrok | Sub2API 通用 usage 的官方账单查询 | 否 | 按周账单实际时间判断新鲜度，月账单不替代周额度 |
+| MiniMax | Sub2API CN 额度接口 | 否 | 只取本次返回的窗口，缺少周窗口时不补 0% |
+| Antigravity | Sub2API Gemini 文本模型额度 | 否 | 显示最高模型使用率；不当作周消耗 |
+
+具体权限、私有配置、只读查询边界与回退方式见 [Sub2API 额度接入](sub2api-quota.md)。未覆盖的来源或显式本机模式继续使用原采集器。
 
 Grok · Win 已退订，不再采集；历史底账中的 Grok · Win 记录也会在展示层过滤。
 
@@ -60,7 +64,7 @@ Grok · Win 已退订，不再采集；历史底账中的 Grok · Win 记录也�
 
 - 主百分比是“本周已用”，剩余量按 `100 - used_pct` 计算。
 - 卡片按周剩余从少到多排列，最需要处理的账号靠前。
-- 百分比必须在 `0–100`；非法数字不会进入缓存或页面。
+- 百分比必须有限且非负；CN 供应商允许的超额值保留真实数字，进度条限制在 100% 内，剩余为 0。其他来源仍要求 `0–100`；缺失与非法值不会填成 0%。
 
 ### 短时窗口
 
@@ -108,7 +112,7 @@ ChatGPT 的预存余额与扣费计划从财务源文件的“ChatGPT 预存余�
 
 拆成三个页面是为了避免单页持续增长后难以浏览，也让额度决策、历史分析和账单盘点各自保持清晰。
 
-豆包继续在额度概览、提醒、每日消耗及账号筛选、订阅卡片中展示。指定的未付费 Codex 账号仅在公开额度页及历史页隐藏，本地看板与原始底账保留；按完整账号标识匹配，避免不同账号打码后重名。名单位于本机权限为 `0600` 的私有文件 `~/.cache/ai-quota-monitor/public-hidden-accounts.json`，不进入仓库；缺失或无效时停止生成公开页面。其他来源及授权公开的余额计划继续展示。
+当前工作区按既有规则停用豆包展示，原采集器与历史文件保留。指定的未付费 Codex 账号仍只在公开额度页及历史页隐藏；未迁入 Sub2API 时，本地显示“未接入”。过滤按完整账号标识匹配，名单位于本机权限为 `0600` 的 `~/.cache/ai-quota-monitor/public-hidden-accounts.json`；缺失或无效时停止生成公开页面。其他来源及授权公开的余额计划继续展示。
 
 ## 7. 定时、睡眠、断网与发布
 
@@ -133,7 +137,9 @@ ChatGPT 的预存余额与扣费计划从财务源文件的“ChatGPT 预存余�
 
 | 场景 | 页面行为 |
 |---|---|
-| 单个数据源不可用 | 显示异常卡片，其他来源继续生成 |
+| 单个数据源不可用 | 保留其他成功账号；公开发布仍受既有异常数量门槛限制 |
+| Sub2API 配置损坏 | 命令行停止写入；实时看板保留上次快照并标为缓存 |
+| Sub2API 已映射账号读取失败 | 只重试该账号，不切回本地 OAuth 或 CLI；不写成成功的 0% 样本 |
 | 豆包实时刷新失败但有缓存 | 卡片标“使用缓存”，备注只保留采集时间和短原因，例如“未开额度页”；不产生额度提醒 |
 | 豆包缓存超过阈值 | 额外显示过期时长，例如“过期14小时” |
 | 百分比或日期非法 | 拒绝整次豆包快照，不覆盖上一份有效缓存 |
@@ -160,6 +166,8 @@ osacompile -o /tmp/read_doubao_quota.scpt scripts/read_doubao_quota.applescript
 ## 11. 主要文件
 
 - [`quota_report.py`](../quota_report.py)：数据源、归一化、计算和 HTML 生成。
+- [`sub2api_quota.py`](../sub2api_quota.py)：私有映射、SSH 读取、窗口校验和账号级重试。
+- [`scripts/sub2api_quota_snapshot.py`](../scripts/sub2api_quota_snapshot.py)：服务器内受限用量查询，不返回凭据。
 - [`publish_runtime.py`](../publish_runtime.py)：唯一的生成、提交和推送流程。
 - [`publish.sh`](../publish.sh)：手动发布入口。
 - [`scripts/read_doubao_quota.applescript`](../scripts/read_doubao_quota.applescript)：Chrome 标签页刷新与最小 DOM 提取。

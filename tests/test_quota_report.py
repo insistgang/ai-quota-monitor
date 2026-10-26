@@ -14,7 +14,10 @@ CSV_HEADER = ["ts", "name", "status", "used_pct", "used_text", "reset", "fiveh_t
 
 
 def setUpModule():
-    global _public_filter_test_dir, _public_filter_patch
+    global _public_filter_test_dir, _public_filter_patch, _local_source_patch
+    # These fixtures exercise the legacy collectors, independent of private live config.
+    _local_source_patch = mock.patch.dict(quota_report.os.environ, {"QUOTA_SOURCE": "local"})
+    _local_source_patch.start()
     _public_filter_test_dir = tempfile.TemporaryDirectory()
     config = Path(_public_filter_test_dir.name) / "public-hidden-accounts.json"
     config.write_text(json.dumps({"codex_emails": ["test@example.invalid"]}), encoding="utf-8")
@@ -23,6 +26,7 @@ def setUpModule():
 
 
 def tearDownModule():
+    _local_source_patch.stop()
     _public_filter_patch.stop()
     _public_filter_test_dir.cleanup()
 
@@ -432,6 +436,17 @@ class DailyDeltaTests(unittest.TestCase):
                 days = quota_report._daily_deltas()
         return next(rows for date, rows in days if date == day)
 
+    def test_stale_and_failed_samples_do_not_change_daily_consumption(self):
+        rows = self._daily_rows([
+            ["2026-08-19T23:31:00", "Grok", "ok", "10", "10%", "08-25 00:00", ""],
+            ["2026-08-20T10:31:00", "Grok", "ok", "15", "15%", "08-25 00:00", ""],
+            ["2026-08-20T20:31:00", "Grok", "stale", "99", "99%", "08-25 00:00", ""],
+            ["2026-08-20T21:31:00", "Grok", "error", "99", "99%", "08-25 00:00", ""],
+        ])
+        self.assertEqual(rows, [
+            {"name": "Grok", "delta": 5.0, "reset": False, "partial": False},
+        ])
+
     def test_reset_day_counts_usage_before_and_after_windows_roll_over(self):
         rows = self._daily_rows([
             ["2026-08-19T23:31:00", "Codex · Win", "ok", "75", "75%", "08-20 13:38", ""],
@@ -584,6 +599,25 @@ class HtmlEscapingTests(unittest.TestCase):
         for raw_tag in ("<img", "<script>", "<b>", "<i>", "<u>", "<svg"):
             self.assertNotIn(raw_tag, rendered)
         self.assertIn("&lt;script&gt;used&lt;/script&gt;", rendered)
+
+    def test_card_with_only_short_window_promotes_to_main_display(self):
+        rendered = quota_report._card({
+            "name": "MiniMax",
+            "status": "ok",
+            "used_pct": None,
+            "used_text": "未提供",
+            "reset": "?",
+            "fiveh_pct": 16.0,
+            "fiveh_text": "16%",
+            "fiveh_reset": "10-27 00:00",
+            "fiveh_label": "5h 窗",
+            "note": "Sub2API · 数据 10-26 20:09 · 无周额度",
+        })
+        self.assertNotIn("本周已用 未提供", rendered)
+        self.assertNotIn(">—<", rendered)
+        self.assertIn(">16%</div>", rendered)
+        self.assertIn("剩 84%", rendered)
+        self.assertIn("5h 窗已用 16% · 重置 10-27 00:00", rendered)
 
     def test_error_card_escapes_name_and_status(self):
         rendered = quota_report._card({
@@ -999,6 +1033,75 @@ class GrokWinBillingTests(unittest.TestCase):
         self.assertIsNone(row)
 
 
+class GrokFreshnessTests(unittest.TestCase):
+    def _billing(self, age_seconds, *, used=66, timestamp=None):
+        now = dt.datetime.now(dt.timezone.utc)
+        return json.dumps({
+            "ts": timestamp if timestamp is not None else (
+                now - dt.timedelta(seconds=age_seconds)
+            ).isoformat(),
+            "msg": "billing: fetched credits config",
+            "ctx": {"subscriptionTier": "SuperGrok", "config": {
+                "creditUsagePercent": used,
+                "billingPeriodEnd": (now + dt.timedelta(days=2)).isoformat(),
+            }},
+        })
+
+    def test_old_or_unverifiable_billing_is_not_healthy(self):
+        for text in (self._billing(3 * 86400), self._billing(-3600),
+                     self._billing(0, timestamp="invalid")):
+            with self.subTest(text=text):
+                row = quota_report._grok_row_from_billing_log(text, "Grok")
+                self.assertTrue(row.get("stale"))
+                self.assertEqual(quota_report._unhealthy_rows([row]), [row])
+
+    def test_recent_billing_remains_healthy(self):
+        row = quota_report._grok_row_from_billing_log(self._billing(60), "Grok")
+        self.assertFalse(row.get("stale"))
+        self.assertEqual(row["used_pct"], 66)
+
+    def test_stale_log_triggers_live_probe(self):
+        fresh = {"name": "Grok", "status": "ok", "used_pct": 71,
+                 "used_text": "71%", "reset": "10-26 00:00"}
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / ".grok/logs/unified.jsonl"
+            log.parent.mkdir(parents=True)
+            log.write_text(self._billing(3 * 86400))
+            with mock.patch.object(quota_report, "HOME", Path(tmp)), \
+                 mock.patch.object(quota_report, "_grok_tui", create=True,
+                                   return_value=fresh):
+                row = quota_report._grok("Grok")
+        self.assertEqual(row["used_pct"], 71)
+        self.assertFalse(row.get("stale"))
+
+    def test_failed_live_probe_exposes_cached_data_as_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / ".grok/logs/unified.jsonl"
+            log.parent.mkdir(parents=True)
+            log.write_text(self._billing(3 * 86400))
+            with mock.patch.object(quota_report, "HOME", Path(tmp)), \
+                 mock.patch.object(quota_report, "_grok_tui", create=True,
+                                   return_value={"name": "Grok", "status": "探测超时"}):
+                row = quota_report._grok("Grok")
+        self.assertEqual(row["used_pct"], 66)
+        self.assertTrue(row.get("stale"))
+        self.assertTrue(row.get("cache_fallback"))
+        self.assertIn("探测超时", row["note"])
+        self.assertIn("使用缓存", quota_report._card(row))
+
+    def test_cached_snapshot_is_not_logged_as_a_new_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "quota.csv"
+            with mock.patch.object(quota_report, "LOG_CSV", log):
+                quota_report.append_log([{
+                    "name": "Grok", "status": "ok", "stale": True,
+                    "used_pct": 66, "used_text": "66%",
+                }])
+            with log.open() as f:
+                rows = list(csv.DictReader(f))
+        self.assertEqual(rows[0]["status"], "stale")
+
+
 class CodexAuthTests(unittest.TestCase):
     def _payload(self):
         now = int(dt.datetime.now().timestamp())
@@ -1084,6 +1187,34 @@ class CodexAuthTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertNotEqual(rows[0]["status"], "ok")
+
+    def test_refresh_failure_with_cached_windows_is_retried(self):
+        failed = self._payload()
+        failed["accounts"] = failed["accounts"][:1]
+        failed["accounts"][0]["usage"]["refresh"] = {"status": "error"}
+        fresh = self._payload()
+        fresh["accounts"] = fresh["accounts"][:1]
+        fresh["accounts"][0]["usage"]["secondary"]["used_percent"] = 21
+        with mock.patch.object(quota_report.shutil, "which", return_value="codex-auth"), \
+             mock.patch.object(quota_report.subprocess, "run", side_effect=[
+                 self._run(failed), self._run(fresh),
+             ]):
+            rows = quota_report._collect_batches_with_retries(
+                [("codex", quota_report._codex_auth_accounts)], retry_attempts=1,
+            )
+        self.assertEqual(rows[0]["used_pct"], 21)
+        self.assertFalse(rows[0].get("stale"))
+
+    def test_old_usage_is_marked_stale_even_if_refresh_says_ok(self):
+        data = self._payload()
+        data["accounts"] = data["accounts"][:1]
+        data["accounts"][0]["usage"]["updated_at"] -= 3 * 3600
+        with mock.patch.object(quota_report.shutil, "which", return_value="codex-auth"), \
+             mock.patch.object(quota_report.subprocess, "run", return_value=self._run(data)):
+            row = quota_report._codex_auth_accounts()[0]
+        self.assertTrue(row.get("stale"))
+        self.assertEqual(quota_report._unhealthy_rows([row]), [row])
+        self.assertIn("过期", quota_report._card(row))
 
     def test_public_page_masks_account_emails(self):
         rows = [{
