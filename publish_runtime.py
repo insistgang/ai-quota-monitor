@@ -7,6 +7,7 @@ import datetime as dt
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -21,6 +22,9 @@ PUSH_REMOTE = "https://github.com/insistgang/ai-quota-monitor.git"
 COLLECT_RETRY_ATTEMPTS = 2
 COLLECT_RETRY_DELAY_SECONDS = 15
 MAX_UNHEALTHY_SOURCES = 1
+PUSH_RETRY_ATTEMPTS = 3
+PUSH_RETRY_DELAY_SECONDS = 2
+PUSH_TIMEOUT_SECONDS = 60
 
 
 def _runtime_env() -> dict[str, str]:
@@ -53,6 +57,7 @@ def _run(
     repo: Path,
     env: dict[str, str],
     check: bool = True,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(command),
@@ -60,7 +65,27 @@ def _run(
         env=env,
         check=check,
         text=True,
+        timeout=timeout,
     )
+
+
+def _push_with_retries(repo: Path, env: dict[str, str]) -> None:
+    command = ("git", "push", PUSH_REMOTE, "main")
+    push_env = env.copy()
+    push_env["GIT_TERMINAL_PROMPT"] = "0"
+    for attempt in range(PUSH_RETRY_ATTEMPTS):
+        try:
+            _run(
+                command,
+                repo=repo,
+                env=push_env,
+                timeout=PUSH_TIMEOUT_SECONDS,
+            )
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            if attempt == PUSH_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(PUSH_RETRY_DELAY_SECONDS)
 
 
 def publish(
@@ -101,35 +126,30 @@ def publish(
         env=env,
         check=False,
     )
-    if changed.returncode == 0:
-        return False
-    if changed.returncode != 1:
+    committed = False
+    if changed.returncode == 1:
+        timestamp = (now or dt.datetime.now()).strftime("%Y-%m-%d_%H%M")
+        _run(
+            (
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                f"chore: 每日额度快照 {timestamp}",
+                "--only",
+                "--",
+                *PUBLIC_PAGES,
+            ),
+            repo=repo,
+            env=env,
+        )
+        committed = True
+    elif changed.returncode != 0:
         raise subprocess.CalledProcessError(changed.returncode, changed.args)
 
-    timestamp = (now or dt.datetime.now()).strftime("%Y-%m-%d_%H%M")
-    _run(
-        (
-            "git",
-            "commit",
-            "-q",
-            "-m",
-            f"chore: 每日额度快照 {timestamp}",
-            "--only",
-            "--",
-            *PUBLIC_PAGES,
-        ),
-        repo=repo,
-        env=env,
-    )
     if push:
-        push_env = env.copy()
-        push_env["GIT_TERMINAL_PROMPT"] = "0"
-        _run(
-            ("git", "push", PUSH_REMOTE, "main"),
-            repo=repo,
-            env=push_env,
-        )
-    return True
+        _push_with_retries(repo, env)
+    return committed
 
 
 def runtime_smoke(repo: Path = REPO_ROOT) -> None:
