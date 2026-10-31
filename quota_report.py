@@ -52,6 +52,10 @@ PUBLIC_HIDDEN_ACCOUNTS_PATH = Path(os.environ.get(
     "QUOTA_PUBLIC_HIDDEN_ACCOUNTS",
     str(HOME / ".cache/ai-quota-monitor/public-hidden-accounts.json"),
 ))
+LAST_GOOD_JSON = Path(os.environ.get(
+    "QUOTA_LAST_GOOD",
+    str(HOME / ".cache/ai-quota-monitor/last-good.json"),
+))
 SUB2API_URL = "http://127.0.0.1:18080/v1/usage"
 SUB2API_KEYS = HOME / ".codex/providers/sub2api-edge/keys.env"
 DOUBAO_APPLESCRIPT = Path(__file__).with_name("scripts") / "read_doubao_quota.applescript"
@@ -1029,10 +1033,71 @@ def _collect_batches_with_retries(
 
 
 def _unhealthy_rows(rows: list[dict]) -> list[dict]:
+    """统计需要重试或阻断写入的来源。
+
+    明确标记 retryable=False 的来源（配置里未接入 Sub2API 的账号）是既定状态，
+    不是本次采集故障，不计入异常预算——否则容错额度会被永久占满。
+    """
     return [
         row for row in rows
-        if row.get("status") != "ok" or row.get("stale")
+        if row.get("retryable") is not False
+        and (row.get("status") != "ok" or row.get("stale"))
     ]
+
+
+def _save_last_good(rows: list[dict]) -> None:
+    """记住最近一次全部新鲜的快照，供整体读取失败时降级展示。"""
+    fresh = {r["name"]: r for r in rows if r.get("status") == "ok" and not r.get("stale")}
+    if not fresh:
+        return
+    try:
+        LAST_GOOD_JSON.parent.mkdir(parents=True, exist_ok=True)
+        LAST_GOOD_JSON.write_text(
+            json.dumps(
+                {"captured_at": dt.datetime.now().isoformat(timespec="seconds"), "rows": fresh},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _load_last_good() -> dict:
+    try:
+        data = json.loads(LAST_GOOD_JSON.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    rows = data.get("rows") if isinstance(data, dict) else None
+    return rows if isinstance(rows, dict) else {}
+
+
+def _degrade_with_cache(rows: list[dict]) -> tuple[list[dict], list[str]]:
+    """把本次读取失败的来源换成上次成功值，明确标注过期；返回 (行, 无缓存可用者)。"""
+    cached = _load_last_good()
+    out: list[dict] = []
+    missing: list[str] = []
+    for row in rows:
+        if row.get("status") == "ok" and not row.get("stale"):
+            out.append(row)
+            continue
+        if row.get("retryable") is False:
+            out.append(row)  # 既定未接入，不属于本次故障
+            continue
+        name = row.get("name") or ""
+        old = cached.get(name)
+        if not isinstance(old, dict) or (old.get("used_pct") is None and old.get("fiveh_pct") is None):
+            out.append(row)
+            missing.append(name)
+            continue
+        out.append({
+            **old,
+            "status": "ok",
+            "stale": True,
+            "cache_fallback": True,
+            "note": f"{old.get('note', '')} · 本次刷新失败，沿用上次快照",
+        })
+    return out, missing
 
 
 def _quota_hidden(name: str | None) -> bool:
@@ -2147,11 +2212,20 @@ def main() -> int:
     unhealthy = _unhealthy_rows(rows)
     if args.max_unhealthy >= 0 and len(unhealthy) > args.max_unhealthy:
         names = "、".join(str(row.get("name") or "未知来源") for row in unhealthy)
+        rows, missing = _degrade_with_cache(rows)
+        if missing:
+            print(
+                f"额度采集重试后仍有 {len(missing)} 个来源无缓存可用，取消本次写入："
+                f"{'、'.join(missing)}",
+                file=sys.stderr,
+            )
+            return 2
         print(
-            f"额度采集重试后仍有 {len(unhealthy)} 个异常/缓存来源，取消本次写入：{names}",
+            f"降级发布：{len(unhealthy)} 个来源本次刷新失败，沿用上次成功快照（{names}）",
             file=sys.stderr,
         )
-        return 2
+    else:
+        _save_last_good(rows)
     if args.log:
         append_log(rows)
     if args.html:
