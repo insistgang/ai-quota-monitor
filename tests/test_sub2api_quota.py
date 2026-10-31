@@ -231,5 +231,84 @@ class MonitorIntegrationTests(unittest.TestCase):
         append.assert_not_called()
 
 
+class UnhealthyBudgetTests(unittest.TestCase):
+    def test_unmapped_account_does_not_consume_error_budget(self):
+        rows = [
+            {"name": "A", "status": "ok", "used_pct": 10.0},
+            {"name": "B", "status": "未接入 Sub2API，未执行本地刷新", "retryable": False},
+        ]
+        self.assertEqual(quota_report._unhealthy_rows(rows), [])
+
+    def test_real_failure_still_counts(self):
+        rows = [
+            {"name": "A", "status": "ok", "used_pct": 10.0},
+            {"name": "B", "status": "Sub2API 读取失败（连接或响应异常）"},
+        ]
+        self.assertEqual([r["name"] for r in quota_report._unhealthy_rows(rows)], ["B"])
+
+    def test_degrade_replaces_failed_source_with_cached_value(self):
+        cached = {"A": {"name": "A", "status": "ok", "used_pct": 41.0, "used_text": "41%",
+                        "reset": "11-02 14:27", "note": "Sub2API · 数据 10-27 22:38"}}
+        rows = [
+            {"name": "A", "status": "Sub2API 读取失败（连接或响应异常）"},
+            {"name": "B", "status": "未接入 Sub2API，未执行本地刷新", "retryable": False},
+        ]
+        with mock.patch.object(quota_report, "_load_last_good", return_value=cached):
+            out, missing = quota_report._degrade_with_cache(rows)
+        self.assertEqual(missing, [])
+        self.assertEqual(out[0]["used_pct"], 41.0)
+        self.assertTrue(out[0]["stale"])
+        self.assertTrue(out[0]["cache_fallback"])
+        self.assertIn("沿用上次快照", out[0]["note"])
+        self.assertEqual(out[1]["status"], "未接入 Sub2API，未执行本地刷新")
+
+    def test_degrade_reports_missing_cache_and_keeps_abort(self):
+        rows = [{"name": "A", "status": "Sub2API 读取失败（连接或响应异常）"}]
+        with mock.patch.object(quota_report, "_load_last_good", return_value={}):
+            out, missing = quota_report._degrade_with_cache(rows)
+        self.assertEqual(missing, ["A"])
+        self.assertNotEqual(out[0]["status"], "ok")
+
+    def test_abort_only_when_no_cache_is_available(self):
+        rows = [{"name": "A", "status": "Sub2API 读取失败（连接或响应异常）"},
+                {"name": "B", "status": "Sub2API 读取失败（连接或响应异常）"}]
+        with mock.patch.object(quota_report.sys, "argv",
+                               ["quota_report.py", "--log", "--max-unhealthy", "1"]), \
+             mock.patch.object(quota_report, "collect", return_value=rows), \
+             mock.patch.object(quota_report, "_load_last_good", return_value={}), \
+             mock.patch.object(quota_report, "append_log") as append:
+            self.assertEqual(quota_report.main(), 2)
+        append.assert_not_called()
+
+    def test_degraded_run_publishes_instead_of_aborting(self):
+        rows = [{"name": "A", "status": "Sub2API 读取失败（连接或响应异常）"},
+                {"name": "B", "status": "Sub2API 读取失败（连接或响应异常）"}]
+        cached = {"name": "A", "status": "ok", "used_pct": 41.0, "used_text": "41%",
+                  "reset": "11-02 14:27", "note": "Sub2API · 数据 10-27 22:38"}
+        with mock.patch.object(quota_report.sys, "argv",
+                               ["quota_report.py", "--log", "--max-unhealthy", "1"]), \
+             mock.patch.object(quota_report, "collect", return_value=rows), \
+             mock.patch.object(quota_report, "_load_last_good",
+                               return_value={"A": cached, "B": cached}), \
+             mock.patch.object(quota_report, "append_log") as append:
+            self.assertEqual(quota_report.main(), 0)
+        append.assert_called_once()
+        logged = append.call_args.args[0]
+        self.assertEqual(logged[0]["used_pct"], 41.0)
+        self.assertTrue(logged[0]["stale"])
+
+    def test_fresh_run_records_last_good_snapshot(self):
+        rows = [{"name": "A", "status": "ok", "used_pct": 12.0, "used_text": "12%"}]
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(quota_report, "LAST_GOOD_JSON", Path(directory) / "last-good.json"), \
+             mock.patch.object(quota_report.sys, "argv",
+                               ["quota_report.py", "--max-unhealthy", "1"]), \
+             mock.patch.object(quota_report, "collect", return_value=rows), \
+             mock.patch.object(quota_report, "render", return_value=""):
+            self.assertEqual(quota_report.main(), 0)
+            saved = json.loads((Path(directory) / "last-good.json").read_text())
+        self.assertEqual(saved["rows"]["A"]["used_pct"], 12.0)
+
+
 if __name__ == "__main__":
     unittest.main()
