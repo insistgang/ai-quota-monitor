@@ -1432,9 +1432,8 @@ def _card(r: dict, alert: dict | None = None) -> str:
 {fiveh}{note}</div>"""
 
 
-FINANCE_MD = Path(os.environ.get(
-    "QUOTA_FINANCE_MD",
-    "/Users/insistgang/Documents/knowledge/06-Growth/Finance/大模型订阅与消费盘点.md"))
+_finance_md = os.environ.get("QUOTA_FINANCE_MD", "").strip()
+FINANCE_MD = Path(_finance_md) if _finance_md else None
 
 
 def _strip_md(s: str) -> str:
@@ -1444,6 +1443,8 @@ def _strip_md(s: str) -> str:
 def _load_finance() -> dict:
     """解析订阅、私有预存余额、历史充值、非 AI 订阅与合计口径。"""
     out = {"subs": [], "prepaid": [], "ledger": [], "non_ai": [], "total_ai": "", "total_all": ""}
+    if FINANCE_MD is None:
+        return out
     try:
         text = FINANCE_MD.read_text(encoding="utf-8")
     except Exception:  # noqa: BLE001
