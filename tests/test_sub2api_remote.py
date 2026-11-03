@@ -41,7 +41,7 @@ class RequestValidationTests(unittest.TestCase):
 
     def test_rejects_duplicate_ids_invalid_platforms_and_extra_fields(self):
         invalid_accounts = [
-            [{"id": 1, "platform": "kimi"}, {"id": 1, "platform": "grok"}],
+            [{"id": 1, "platform": "kimi"}, {"id": 1, "platform": "minimax"}],
             [{"id": 1, "platform": "deepseek"}],
             [{"id": 1, "platform": []}],
             [{"id": 1, "platform": {"name": "kimi"}}],
@@ -89,10 +89,6 @@ class RouteAndPayloadTests(unittest.TestCase):
             "http://127.0.0.1:8080/api/v1/admin/cn-providers/accounts/5/quota",
         )
         self.assertEqual(
-            remote.route_for(8, "grok"),
-            "http://127.0.0.1:8080/api/v1/admin/accounts/8/usage?force=true",
-        )
-        self.assertEqual(
             remote.route_for(9, "antigravity"),
             "http://127.0.0.1:8080/api/v1/admin/accounts/9/usage?force=true",
         )
@@ -100,7 +96,7 @@ class RouteAndPayloadTests(unittest.TestCase):
             remote.route_for(6, "openai"),
             "https://chatgpt.com/backend-api/wham/usage",
         )
-        for account_id, platform in ((5, "kimi"), (8, "grok"), (9, "antigravity"), (6, "openai")):
+        for account_id, platform in ((5, "kimi"), (9, "antigravity"), (6, "openai")):
             self.assertNotIn("reset", remote.route_for(account_id, platform).lower())
             self.assertNotIn("responses", remote.route_for(account_id, platform).lower())
 
@@ -150,30 +146,6 @@ class RouteAndPayloadTests(unittest.TestCase):
             0.0,
             "a genuine zero must remain zero while NaN/Infinity are omitted",
         )
-
-    def test_grok_billing_is_reduced_to_the_approved_summary_fields(self):
-        data = remote.filter_payload("grok", {
-            "updated_at": "2030-03-17T00:00:00Z",
-            "grok_billing": {
-                "status_code": 200,
-                "weekly_status_code": 200,
-                "fetched_at": "2030-03-17T00:00:00Z",
-                "weekly_updated_at": "2030-03-17T00:00:00Z",
-                "period_type": "weekly",
-                "period_end": "2030-03-24T00:00:00Z",
-                "usage_percent": 41.0,
-                "monthly_limit": 999,
-                "access_token": "hidden",
-            },
-            "grok_quota_snapshot_state": "observed",
-        }, captured_at=1_900_000_001)
-
-        self.assertEqual(
-            set(data["grok_billing"]),
-            {"status_code", "weekly_status_code", "fetched_at", "weekly_updated_at", "period_type", "period_end", "usage_percent"},
-        )
-        self.assertNotIn("monthly_limit", data["grok_billing"])
-        self.assertNotIn("access_token", json.dumps(data))
 
     def test_http_transport_is_get_only_and_never_returns_error_body(self):
         calls = []

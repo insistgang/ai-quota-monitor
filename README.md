@@ -10,7 +10,7 @@
 
 Sub2API 数据源通过已有 SSH 连接在服务器内查询账号额度，凭据不复制到 Mac。配置与原账号名称的映射放在 `~/.cache/ai-quota-monitor/sub2api.json`；映射覆盖的来源停止调用本地 CLI。失败或过期的账号单独重试，成功账号不重复查询，配置错误会阻止写入。详见 [Sub2API 额度接入](docs/sub2api-quota.md)。
 
-本机采集模式保留原有 Grok 日志／官方 `/usage`、Codex 刷新与缓存重试。旧数据会标为缓存／过期，不作为新成功样本计入每日消耗。GitHub 推送仍最多尝试 3 次、每次限时 60 秒；失败保留待推送提交。
+本机采集模式保留原有 Codex 刷新与缓存重试。旧数据会标为缓存／过期，不作为新成功样本计入每日消耗。GitHub 推送仍最多尝试 3 次、每次限时 60 秒；失败保留待推送提交。
 
 豆包采集器和历史数据保留，当前工作区按原有停用规则过滤，不纳入 Sub2API。指定的未付费 Codex 账号仍从公开额度页和历史页隐藏，本地保留“未接入”状态；公开过滤名单位于 `~/.cache/ai-quota-monitor/public-hidden-accounts.json`（权限 `0600`），不进入仓库。配置缺失或无效时，公开页面生成会停止。
 
@@ -26,7 +26,6 @@ Sub2API 数据源通过已有 SSH 连接在服务器内查询账号额度，凭�
 |---|---|
 | Kimi for Coding（双账号） | Sub2API CN 账号额度接口，读取 5h／周窗口 |
 | Codex（OpenAI 账号） | 在服务器内使用 Sub2API 当前凭据 GET 官方用量；按实际窗口时长区分 5h／7 天，避开会触发模型探针或自动重置的管理端路径 |
-| Grok（SuperGrok） | Sub2API 通用账号 usage 的账单查询路径；使用官方周额度及其实际更新时间 |
 | MiniMax | Sub2API CN 账号额度接口；只显示上游本次实际返回的 5h／周窗口 |
 | Antigravity（Gemini 组） | Sub2API 分模型额度，以 Gemini 文本模型最高使用率作为周额度 |
 | 豆包个人会员 | 保留原 Chrome 可见 DOM 采集器，未接入 Sub2API |
@@ -64,14 +63,14 @@ launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 
 launchd 的 stdout/stderr 默认写入 `~/Library/Logs/ai-quota-monitor/`；安装命令会预先创建该目录。入口和日志都不要放进 `Documents`，否则 Mac 重启后可能被 TCC/System Policy 在脚本启动前拦截。
 
-Sub2API 模式只使用已核对的用量查询路径，不发送模型任务或主动重置额度。Sub2API 会正常更新额度缓存，并可能由自身维护 Grok OAuth 凭据；监控器不实现第二套 OAuth 刷新。原发布入口与运行计划保持不变。
+Sub2API 模式只使用已核对的用量查询路径，不发送模型任务或主动重置额度。Sub2API 会正常更新额度缓存；监控器不实现第二套 OAuth 刷新。原发布入口与运行计划保持不变。
 
 ## 依赖
 
 - macOS + Python 3.10+（只用标准库）
 - 豆包：Chrome 已登录、额度管理页保持打开；自动同步需允许来自 Apple 事件的 JavaScript
 - Sub2API 模式：已有无交互 SSH 登录，服务器具备 Python 3、Docker 和读取 Sub2API 数据库的权限
-- 本机模式才需要 `tmux`、已登录的 `codex-auth`／`grok`／`mmx`／`agy`，以及 KimiCodeBar 的账号配置
+- 本机模式才需要 `tmux`、已登录的 `codex-auth`／`mmx`／`agy`，以及 KimiCodeBar 的账号配置
 
 ## 隐私与安全
 

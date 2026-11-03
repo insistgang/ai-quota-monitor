@@ -39,7 +39,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/Users/YOURNAME/.grok/bin:/Users/YOURNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <string>/Users/YOURNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     <key>TERM</key>
     <string>xterm-256color</string>
   </dict>

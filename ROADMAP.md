@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-- 已在本机启用 Sub2API 来源，通过现有 SSH 连接在 RN 服务器读取原看板中的 8 个账号（OpenAI ×3、Kimi ×2、MiniMax、Grok、Antigravity）。私有映射位于 `~/.cache/ai-quota-monitor/sub2api.json`，权限 `0600`；已覆盖账号不再调用本地 CLI。接口与回退说明见 [Sub2API 额度接入](docs/sub2api-quota.md)。
+- 已在本机启用 Sub2API 来源，通过现有 SSH 连接在 RN 服务器读取原看板中的 7 个账号（OpenAI ×3、Kimi ×2、MiniMax、Antigravity）。私有映射位于 `~/.cache/ai-quota-monitor/sub2api.json`，权限 `0600`；已覆盖账号不再调用本地 CLI。接口与回退说明见 [Sub2API 额度接入](docs/sub2api-quota.md)。
 - MiniMax 本次只返回 5h 窗口，Antigravity 按 Gemini 文本模型窗口展示；缺少周窗口显示未知，不伪造 0% 或计入周消耗。原有每小时发布计划保持不变，本轮未手动提交、推送或发布。
 
 - 本地静态看板、实时服务和公开网页统一对动态文本中的邮箱打码；原始账号标识仅保留在采集结果和本地底账中。
@@ -12,6 +12,7 @@
 
 ## 最近完成
 
+- 2026-11-03 23:23 下线 Grok 来源。采集端删除本机 Grok 日志／TUI／Win 远程采集与 Sub2API `grok` 平台支持，本机私有映射移除 Grok 账号（8 → 7）；展示层统一按名称过滤，历史底账中的 Grok 记录不再出现在概览与每日消耗页。运行时 PATH 移除 `.grok/bin`。
 - 2026-10-28 00:12 修复定时发布的容错预算缺陷。此前 `--max-unhealthy 1` 的额度被配置里永久「未接入 Sub2API」的免费账号整份占满（`retryable=False` 仍被计入异常），任何一次瞬时失败都会让整轮写入取消；10-27 23:30 因 SSH 整体不可达，线上冻结在 22:38 快照逾 1.5 小时。
   - `_unhealthy_rows` 不再把 `retryable=False` 的既定状态计入异常预算，容错额度回到真实可用的 1。
   - 新增最近成功快照缓存 `~/.cache/ai-quota-monitor/last-good.json`：整轮读取失败时，把失败来源替换为上次成功值并标注「本次刷新失败，沿用上次快照」，页面以「使用缓存」样式发布，取代整轮放弃。

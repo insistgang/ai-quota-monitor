@@ -31,7 +31,6 @@ def _runtime_env() -> dict[str, str]:
     env = os.environ.copy()
     user_home = Path(env.get("HOME") or Path.home())
     preferred_bins = [
-        user_home / ".grok" / "bin",
         user_home / ".local" / "bin",
     ]
     node_root = user_home / ".nvm" / "versions" / "node"

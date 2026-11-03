@@ -438,13 +438,13 @@ class DailyDeltaTests(unittest.TestCase):
 
     def test_stale_and_failed_samples_do_not_change_daily_consumption(self):
         rows = self._daily_rows([
-            ["2026-08-19T23:31:00", "Grok", "ok", "10", "10%", "08-25 00:00", ""],
-            ["2026-08-20T10:31:00", "Grok", "ok", "15", "15%", "08-25 00:00", ""],
-            ["2026-08-20T20:31:00", "Grok", "stale", "99", "99%", "08-25 00:00", ""],
-            ["2026-08-20T21:31:00", "Grok", "error", "99", "99%", "08-25 00:00", ""],
+            ["2026-08-19T23:31:00", "MiniMax", "ok", "10", "10%", "08-25 00:00", ""],
+            ["2026-08-20T10:31:00", "MiniMax", "ok", "15", "15%", "08-25 00:00", ""],
+            ["2026-08-20T20:31:00", "MiniMax", "stale", "99", "99%", "08-25 00:00", ""],
+            ["2026-08-20T21:31:00", "MiniMax", "error", "99", "99%", "08-25 00:00", ""],
         ])
         self.assertEqual(rows, [
-            {"name": "Grok", "delta": 5.0, "reset": False, "partial": False},
+            {"name": "MiniMax", "delta": 5.0, "reset": False, "partial": False},
         ])
 
     def test_reset_day_counts_usage_before_and_after_windows_roll_over(self):
@@ -495,16 +495,16 @@ class DailyDeltaTests(unittest.TestCase):
         self.assertEqual(rows[0]["delta"], 5.0)
         self.assertTrue(rows[0]["partial"])
 
-    def test_grok_win_is_hidden_from_daily_history(self):
+    def test_grok_sources_are_hidden_from_daily_history(self):
         rows = self._daily_rows([
-            ["2026-08-19T23:31:00", "Grok · Win", "ok", "0", "0%", "08-31 00:00", ""],
-            ["2026-08-20T20:31:00", "Grok · Win", "ok", "8", "8%", "08-31 00:00", ""],
+            ["2026-08-19T23:31:00", "Grok · SuperGrok", "ok", "0", "0%", "08-31 00:00", ""],
+            ["2026-08-20T20:31:00", "Grok · SuperGrok", "ok", "8", "8%", "08-31 00:00", ""],
             ["2026-08-19T23:31:00", "Codex · Mac", "ok", "4", "4%", "09-01 22:18", ""],
             ["2026-08-20T20:31:00", "Codex · Mac", "ok", "6", "6%", "09-01 22:18", ""],
         ])
         names = [row["name"] for row in rows]
         self.assertIn("Codex · Mac", names)
-        self.assertTrue(all("grok · win" not in name.lower() for name in names))
+        self.assertTrue(all("grok" not in name.lower() for name in names))
 
     def test_doubao_history_is_restored_without_changing_other_usage(self):
         rows = self._daily_rows([
@@ -988,118 +988,37 @@ class CodexRowTests(unittest.TestCase):
         self.assertNotIn("fiveh_pct", row)
 
 
-class GrokWinBillingTests(unittest.TestCase):
-    def test_parses_latest_billing_snapshot(self):
-        stale = json.dumps({
-            "ts": "2026-08-27T07:24:41.360Z",
-            "msg": "billing: fetched credits config",
-            "ctx": {
-                "subscriptionTier": "SuperGrok",
-                "config": {
-                    "creditUsagePercent": 30.0,
-                    "billingPeriodEnd": "2026-09-03T05:30:11.808008+00:00",
-                    "currentPeriod": {"end": "2026-09-03T05:30:11.808008+00:00"},
-                },
-            },
-        })
-        fresh = json.dumps({
-            "ts": "2026-08-27T07:31:00.146Z",
-            "msg": "billing: fetched credits config",
-            "ctx": {
-                "subscriptionTier": "SuperGrok",
-                "config": {
-                    "creditUsagePercent": 32.0,
-                    "billingPeriodEnd": "2026-09-03T05:30:11.808008+00:00",
-                    "currentPeriod": {"end": "2026-09-03T05:30:11.808008+00:00"},
-                },
-            },
-        })
-        row = quota_report._grok_row_from_billing_log(
-            "\n".join((stale, fresh)),
-            "Grok · Win",
-            note="远程日志",
-        )
-        self.assertEqual(row["used_pct"], 32.0)
-        self.assertEqual(row["used_text"], "32%")
-        self.assertEqual(row["reset"], "09-03 13:30")
-        self.assertIn("SuperGrok", row["note"])
-        self.assertIn("远程日志", row["note"])
-
-    def test_ignores_non_billing_lines(self):
-        row = quota_report._grok_row_from_billing_log(
-            '{"ts":"2026-08-27T07:31:00Z","msg":"session created"}\n',
-            "Grok · Win",
-        )
-        self.assertIsNone(row)
-
-
-class GrokFreshnessTests(unittest.TestCase):
-    def _billing(self, age_seconds, *, used=66, timestamp=None):
+class SnapshotFreshnessTests(unittest.TestCase):
+    def test_old_or_unverifiable_snapshot_is_not_healthy(self):
         now = dt.datetime.now(dt.timezone.utc)
-        return json.dumps({
-            "ts": timestamp if timestamp is not None else (
-                now - dt.timedelta(seconds=age_seconds)
-            ).isoformat(),
-            "msg": "billing: fetched credits config",
-            "ctx": {"subscriptionTier": "SuperGrok", "config": {
-                "creditUsagePercent": used,
-                "billingPeriodEnd": (now + dt.timedelta(days=2)).isoformat(),
-            }},
-        })
-
-    def test_old_or_unverifiable_billing_is_not_healthy(self):
-        for text in (self._billing(3 * 86400), self._billing(-3600),
-                     self._billing(0, timestamp="invalid")):
-            with self.subTest(text=text):
-                row = quota_report._grok_row_from_billing_log(text, "Grok")
-                self.assertTrue(row.get("stale"))
+        for timestamp in ((now - dt.timedelta(days=3)).isoformat(),
+                          (now + dt.timedelta(hours=1)).isoformat(),
+                          "invalid"):
+            with self.subTest(timestamp=timestamp):
+                self.assertTrue(quota_report._snapshot_stale(timestamp))
+                row = {"name": "MiniMax", "status": "ok", "stale": True}
                 self.assertEqual(quota_report._unhealthy_rows([row]), [row])
 
-    def test_recent_billing_remains_healthy(self):
-        row = quota_report._grok_row_from_billing_log(self._billing(60), "Grok")
-        self.assertFalse(row.get("stale"))
-        self.assertEqual(row["used_pct"], 66)
-
-    def test_stale_log_triggers_live_probe(self):
-        fresh = {"name": "Grok", "status": "ok", "used_pct": 71,
-                 "used_text": "71%", "reset": "10-26 00:00"}
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / ".grok/logs/unified.jsonl"
-            log.parent.mkdir(parents=True)
-            log.write_text(self._billing(3 * 86400))
-            with mock.patch.object(quota_report, "HOME", Path(tmp)), \
-                 mock.patch.object(quota_report, "_grok_tui", create=True,
-                                   return_value=fresh):
-                row = quota_report._grok("Grok")
-        self.assertEqual(row["used_pct"], 71)
-        self.assertFalse(row.get("stale"))
-
-    def test_failed_live_probe_exposes_cached_data_as_stale(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / ".grok/logs/unified.jsonl"
-            log.parent.mkdir(parents=True)
-            log.write_text(self._billing(3 * 86400))
-            with mock.patch.object(quota_report, "HOME", Path(tmp)), \
-                 mock.patch.object(quota_report, "_grok_tui", create=True,
-                                   return_value={"name": "Grok", "status": "探测超时"}):
-                row = quota_report._grok("Grok")
-        self.assertEqual(row["used_pct"], 66)
-        self.assertTrue(row.get("stale"))
-        self.assertTrue(row.get("cache_fallback"))
-        self.assertIn("探测超时", row["note"])
-        self.assertIn("使用缓存", quota_report._card(row))
+    def test_recent_snapshot_remains_healthy(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        self.assertFalse(quota_report._snapshot_stale(now.isoformat()))
 
     def test_cached_snapshot_is_not_logged_as_a_new_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "quota.csv"
             with mock.patch.object(quota_report, "LOG_CSV", log):
                 quota_report.append_log([{
-                    "name": "Grok", "status": "ok", "stale": True,
+                    "name": "MiniMax", "status": "ok", "stale": True,
                     "used_pct": 66, "used_text": "66%",
                 }])
             with log.open() as f:
                 rows = list(csv.DictReader(f))
         self.assertEqual(rows[0]["status"], "stale")
+
+    def test_cache_fallback_is_flagged_on_the_card(self):
+        row = {"name": "MiniMax", "status": "ok", "used_pct": 66,
+               "used_text": "66%", "reset": "?", "cache_fallback": True}
+        self.assertIn("使用缓存", quota_report._card(row))
 
 
 class CodexAuthTests(unittest.TestCase):
@@ -1283,7 +1202,7 @@ class QuotaVisibilityTests(unittest.TestCase):
 
     def test_doubao_is_restored_to_dashboards_and_subscriptions(self):
         names = ["豆包 · 体验套餐", "Kimi", "Codex · doubao@example.com",
-                 "Grok", "MiniMax", "Antigravity · Gemini 组"]
+                 "MiniMax", "Antigravity · Gemini 组"]
         rows = [{"name": name, "status": "ok", "used_pct": 10,
                  "used_text": "10%", "reset": "?"} for name in names]
         finance = {
@@ -1297,7 +1216,7 @@ class QuotaVisibilityTests(unittest.TestCase):
                 page = quota_report.render_html(rows, public=public)
                 self.assertIn("豆包 · 体验套餐", page)
                 self.assertIn("豆包会员", page)
-                for name in ("Kimi", "Grok", "MiniMax", "Antigravity · Gemini 组"):
+                for name in ("Kimi", "MiniMax", "Antigravity · Gemini 组"):
                     self.assertIn(name, page)
                 self.assertIn("Codex · d***@example.com", page)
                 self.assertIn("490 元/年", page)
@@ -1314,7 +1233,6 @@ class CollectSourceTests(unittest.TestCase):
              mock.patch.object(quota_report, "_codex_auth_accounts",
                                return_value=[row("Codex · first@163.com"),
                                              row("Codex · second@hotmail.com")]), \
-             mock.patch.object(quota_report, "_grok", return_value=row("Grok · SuperGrok")), \
              mock.patch.object(quota_report, "_minimax", return_value=row("MiniMax")), \
              mock.patch.object(quota_report, "_agy", return_value=[row("Antigravity · Gemini 组")]):
             names = [r["name"] for r in quota_report.collect()]
@@ -1323,7 +1241,7 @@ class CollectSourceTests(unittest.TestCase):
         self.assertIn("Codex · second@hotmail.com", names)
         self.assertIn("MiniMax", names)
         self.assertIn("豆包", names)
-        self.assertEqual(len(names), 8)
+        self.assertEqual(len(names), 7)
 
 
 if __name__ == "__main__":
