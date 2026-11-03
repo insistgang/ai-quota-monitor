@@ -19,7 +19,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-ALLOWED_PLATFORMS = {"openai", "kimi", "minimax", "grok", "antigravity"}
+ALLOWED_PLATFORMS = {"openai", "kimi", "minimax", "antigravity"}
 MAX_ACCOUNTS = 16
 MAX_BIGINT = (1 << 63) - 1
 MAX_INPUT_BYTES = 8192
@@ -131,14 +131,12 @@ def mint_admin_jwt(secret, admin, now=None):
 def route_for(account_id, platform):
     # Keep OpenAI on the direct read-only usage endpoint. The generic OpenAI
     # account-usage route can run a model probe and the admin quota handler can
-    # notify auto-reset. Grok's generic usage route is billing-only; Sub2API may
-    # update its own cached snapshot or maintain its own OAuth token there.
-    # The helper itself performs no such writes or refreshes.
+    # notify auto-reset. The helper itself performs no such writes or refreshes.
     if platform == "openai":
         return OPENAI_USAGE_URL
     if platform in ("kimi", "minimax"):
         return f"{SUB2API_BASE_URL}/api/v1/admin/cn-providers/accounts/{account_id}/quota"
-    if platform in ("grok", "antigravity"):
+    if platform == "antigravity":
         return f"{SUB2API_BASE_URL}/api/v1/admin/accounts/{account_id}/usage?force=true"
     raise ValueError("invalid_input")
 
@@ -265,25 +263,6 @@ def _filter_antigravity_quota(value):
     return result
 
 
-def _filter_grok_billing(value):
-    if not isinstance(value, dict):
-        return None
-    allowed = (
-        "status_code", "weekly_status_code", "fetched_at", "weekly_updated_at",
-        "period_type", "period_end", "usage_percent",
-    )
-    result = {}
-    for key in allowed:
-        item = value.get(key)
-        if key in ("status_code", "weekly_status_code") and type(item) is int:
-            result[key] = item
-        elif key in ("fetched_at", "weekly_updated_at", "period_type", "period_end") and isinstance(item, str):
-            result[key] = item
-        elif key == "usage_percent" and _safe_number(item):
-            result[key] = item
-    return result
-
-
 def filter_payload(platform, payload, captured_at):
     """Project provider payloads onto the collector's non-secret quota contract."""
     if not isinstance(payload, dict):
@@ -339,12 +318,6 @@ def filter_payload(platform, payload, captured_at):
     antigravity_quota = _filter_antigravity_quota(payload.get("antigravity_quota"))
     if antigravity_quota is not None:
         result["antigravity_quota"] = antigravity_quota
-    grok_billing = _filter_grok_billing(payload.get("grok_billing"))
-    if grok_billing is not None:
-        result["grok_billing"] = grok_billing
-    snapshot_state = payload.get("grok_quota_snapshot_state")
-    if isinstance(snapshot_state, str):
-        result["grok_quota_snapshot_state"] = snapshot_state
     return result
 
 

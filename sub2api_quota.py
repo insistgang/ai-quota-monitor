@@ -17,7 +17,7 @@ CONFIG_PATH = Path.home() / ".cache/ai-quota-monitor/sub2api.json"
 REMOTE_SCRIPT = Path(__file__).with_name("scripts") / "sub2api_quota_snapshot.py"
 COLLECTORS = {
     "openai": {"codex_auth"}, "kimi": {"kimi_mine", "kimi_shared"},
-    "minimax": {"minimax"}, "grok": {"grok"}, "antigravity": {"antigravity"},
+    "minimax": {"minimax"}, "antigravity": {"antigravity"},
 }
 
 
@@ -126,14 +126,6 @@ def _windows(platform: str, data: dict) -> tuple[dict, object, bool]:
                 if kind in windows:
                     raise ValueError
                 windows[kind] = (window.get("used_percent"), window.get("reset_at"))
-    elif platform == "grok":
-        billing = data.get("grok_billing") or {}
-        stamp = billing.get("weekly_updated_at")
-        incomplete = billing.get("weekly_status_code") != 200
-        for key, kind in (("seven_day", "week"), ("five_hour", "short")):
-            window = data.get(key)
-            if isinstance(window, dict):
-                windows[kind] = (window.get("utilization"), window.get("resets_at"))
     elif platform == "antigravity":
         stamp = data.get("updated_at")
         models = data.get("antigravity_quota") or {}

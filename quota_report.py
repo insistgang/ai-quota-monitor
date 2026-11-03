@@ -8,7 +8,6 @@
 - Kimi（朋友 199/月）：KimiCodeBar credentials 里 alias=friend* 的 key
 - 豆包个人会员：已登录 Chrome 中官方额度页的可见 DOM
 - Codex（codex-auth 多账号）：`codex-auth list --json` 一次读取全部已登录账号的官方 5h/周窗额度（API 实时）
-- Grok（SuperGrok / Mac）：tmux 驱动本机 grok TUI 的 /usage 面板截屏解析（Win 端已退订，不采集）
 - MiniMax：本机 mmx CLI 的 `mmx quota show`（JSON 输出）
 
 用法：
@@ -21,14 +20,12 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import csv
 import datetime as dt
 import html
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -56,11 +53,8 @@ LAST_GOOD_JSON = Path(os.environ.get(
     "QUOTA_LAST_GOOD",
     str(HOME / ".cache/ai-quota-monitor/last-good.json"),
 ))
-SUB2API_URL = "http://127.0.0.1:18080/v1/usage"
-SUB2API_KEYS = HOME / ".codex/providers/sub2api-edge/keys.env"
 DOUBAO_APPLESCRIPT = Path(__file__).with_name("scripts") / "read_doubao_quota.applescript"
 HTTP_TIMEOUT = 15
-SSH_TIMEOUT = 20
 SOURCE_MAX_AGE_SECONDS = 5 * 60
 
 
@@ -587,7 +581,7 @@ def _tmux_slash_probe(cmd: str, slash: str, wait_boot: int = 12, wait_panel: int
     sess = f"quota_probe_{Path(cmd).name.replace(' ', '_')}"
     subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True)
     env = os.environ.copy()
-    env["PATH"] = f"{HOME}/.local/bin:{HOME}/.grok/bin:{env.get('PATH', '')}"
+    env["PATH"] = f"{HOME}/.local/bin:{env.get('PATH', '')}"
     try:
         subprocess.run(["tmux", "new-session", "-d", "-s", sess, "-x", "200", "-y", "50", cmd],
                        env=env, check=True, timeout=15, capture_output=True)
@@ -717,208 +711,6 @@ def _codex_auth_accounts() -> list[dict]:
     if not rows:
         return [{"name": "Codex（codex-auth）", "status": "codex-auth 未登录任何账号"}]
     return rows
-
-
-def _load_sub2api_key(group: str = "GROK") -> str | None:
-    if not SUB2API_KEYS.exists():
-        return None
-    try:
-        for line in SUB2API_KEYS.read_text(encoding="utf-8").splitlines():
-            line = line.strip().removeprefix("export ")
-            if "=" in line and line.split("=", 1)[0].strip() == group:
-                parts = shlex.split(line.split("=", 1)[1], comments=True)
-                return parts[0] if parts else None
-    except Exception:
-        return None
-    return None
-
-
-def _fetch_sub2api_group_usage(group: str, label: str, custom_model_name: str | None = None) -> dict | None:
-    """通用：从 Sub2API 边缘网关 /v1/usage 读取指定分组的实时用量（毫秒级，无阻塞）。"""
-    key = _load_sub2api_key(group)
-    if not key:
-        return None
-    try:
-        req = urllib.request.Request(SUB2API_URL, headers={"Authorization": f"Bearer {key}"})
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-
-        today = data.get("usage", {}).get("today", {})
-        rem = data.get("remaining")
-        stats = {m.get("model"): m for m in data.get("model_stats", []) if isinstance(m, dict)}
-
-        parts = []
-        if rem is not None:
-            parts.append(f"余额 ${rem:.2f}")
-        if today.get("requests"):
-            parts.append(f"今日 {today.get('requests')}次/共${today.get('cost', 0):.2f}")
-
-        if custom_model_name and custom_model_name in stats:
-            m_stat = stats[custom_model_name]
-            parts.append(f"{custom_model_name} {m_stat.get('requests', 0)}次/${m_stat.get('cost', 0):.2f}")
-
-        return {
-            "name": label,
-            "status": "ok",
-            "used_pct": 0.0,
-            "used_text": "实时可用",
-            "reset": "随用随充",
-            "note": " · ".join(parts) or "Sub2API 实时网关",
-            "fiveh_pct": None,
-            "fiveh_text": None,
-            "fiveh_reset": None,
-        }
-    except Exception:
-        return None
-
-
-def _grok_log_row(label: str) -> dict | None:
-    log_file = HOME / ".grok/logs/unified.jsonl"
-    try:
-        text = log_file.read_text(encoding="utf-8", errors="ignore")
-        return _grok_row_from_billing_log(text, label)
-    except OSError:
-        return None
-
-
-def _grok(label: str) -> dict:
-    """复用近五分钟的 billing 快照；过期则实时探测，失败时明确标记缓存。"""
-    cached = _grok_log_row(label)
-    if cached and not cached["stale"]:
-        return cached
-    live = _grok_tui(label)
-    if live.get("status") == "ok" and not live.get("stale"):
-        return live
-    if cached:
-        return {
-            **cached, "stale": True, "cache_fallback": True,
-            "note": f"{cached['note']} · 刷新失败：{live.get('status', '无新数据')}",
-        }
-    return live
-
-
-def _grok_tui(label: str) -> dict:
-    """只查询官方 /usage；临时终端使用独立会话，不干扰正在使用的 Grok。"""
-    if not shutil.which("tmux"):
-        return {"name": label, "status": "tmux 不可用，无法探测"}
-    sess = f"grok_quota_probe_{os.getpid()}"
-    grok_bin = shutil.which("grok") or str(HOME / ".grok/bin/grok")
-    try:
-        subprocess.run(["tmux", "new-session", "-d", "-s", sess, "-x", "200", "-y", "50",
-                        "-c", "/tmp", f"{shlex.quote(grok_bin)} --cwd /tmp"],
-                       check=True, timeout=15, capture_output=True)
-        time.sleep(5)
-        subprocess.run(["tmux", "send-keys", "-t", sess, "/usage", "Enter"],
-                       check=True, timeout=5, capture_output=True)
-        time.sleep(4)
-        out = subprocess.run(["tmux", "capture-pane", "-t", sess, "-p"],
-                             capture_output=True, timeout=5)
-        text = out.stdout.decode("utf-8", errors="ignore")
-        refreshed = _grok_log_row(label)
-        if refreshed and not refreshed["stale"]:
-            return refreshed
-        if "Weekly limit" not in text:
-            return {"name": label, "status": "未捕获到 /usage 面板"}
-        seg = text.split("Weekly limit", 1)[1][:1500]
-        m_pct = re.search(r"(\d+(?:\.\d+)?)%", seg)
-        m_rs = re.search(r"Resets:\s*([^\n]+)", seg)
-        if not m_pct:
-            return {"name": label, "status": "面板解析失败"}
-        reset = m_rs.group(1).split("│")[0].strip() if m_rs else "?"
-        return {
-            "name": label,
-            "status": "ok",
-            "used_pct": float(m_pct.group(1)),
-            "used_text": f"{m_pct.group(1)}%",
-            "reset": reset,
-            "note": "SuperGrok · 实时查询 " + dt.datetime.now().strftime("%m-%d %H:%M"),
-            "captured_at": time.time(),
-        }
-    except Exception as e:  # noqa: BLE001
-        return {"name": label, "status": f"探测失败: {type(e).__name__}"}
-    finally:
-        subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True)
-
-
-def _grok_row_from_billing_log(text: str, label: str, *, note: str = "") -> dict | None:
-    """从 grok unified.jsonl 的 billing 行解析周已用百分比。"""
-    best = None
-    best_ts = ""
-    for raw in text.splitlines():
-        if "billing: fetched credits config" not in raw:
-            continue
-        start = raw.find("{")
-        if start < 0:
-            continue
-        try:
-            obj = json.loads(raw[start:])
-        except Exception:  # noqa: BLE001
-            continue
-        ctx = obj.get("ctx") if isinstance(obj, dict) else None
-        if not isinstance(ctx, dict):
-            continue
-        cfg = ctx.get("config") if isinstance(ctx.get("config"), dict) else {}
-        pct = cfg.get("creditUsagePercent")
-        if pct is None:
-            continue
-        ts = obj.get("ts") or ""
-        if best is None or str(ts) >= best_ts:
-            best = (cfg, ctx, pct)
-            best_ts = str(ts)
-    if not best:
-        return None
-    cfg, ctx, pct = best
-    period = cfg.get("currentPeriod") if isinstance(cfg.get("currentPeriod"), dict) else {}
-    end = cfg.get("billingPeriodEnd") or period.get("end")
-    tier = ctx.get("subscriptionTier") or ""
-    bits = [p for p in (tier, note) if p]
-    if best_ts:
-        bits.append(f"数据 {_fmt_utc(best_ts)}")
-    try:
-        used = float(pct)
-    except (TypeError, ValueError):
-        return None
-    if not 0 <= used <= 100:
-        return None
-    return {
-        "name": label,
-        "status": "ok",
-        "used_pct": used,
-        "used_text": f"{used:g}%",
-        "reset": _fmt_utc(end) if end else "?",
-        "note": " · ".join(bits),
-        "captured_at": best_ts,
-        "stale": _snapshot_stale(best_ts),
-    }
-
-
-def _grok_win(label: str) -> dict:
-    """Win 端：SSH 读取 grok 日志里最近一次官方 billing 快照，不启动 TUI、不消耗对话额度。"""
-    ps_script = (
-        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
-        "$path = Join-Path $env:USERPROFILE '.grok\\logs\\unified.jsonl'\n"
-        "if (-not (Test-Path $path)) { exit 0 }\n"
-        "$hits = Select-String -Path $path -Pattern 'billing: fetched credits config' "
-        "| Select-Object -Last 8\n"
-        "foreach ($h in $hits) { Write-Output $h.Line }\n"
-    )
-    encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
-    try:
-        out = subprocess.run(
-            ["ssh", "-o", f"ConnectTimeout={SSH_TIMEOUT - 10}", "desktop",
-             "powershell", "-NoProfile", "-EncodedCommand", encoded],
-            capture_output=True, timeout=max(SSH_TIMEOUT, 30), check=False,
-        )
-        text = (out.stdout or b"").decode("utf-8", errors="ignore")
-        if out.returncode != 0 or not text.strip():
-            return {"name": label, "status": "ssh 无输出（台式机离线？）"}
-        row = _grok_row_from_billing_log(text, label, note="远程日志")
-        if not row:
-            return {"name": label, "status": "对端日志无额度数据"}
-        return row
-    except Exception as e:  # noqa: BLE001
-        return {"name": label, "status": f"ssh 失败: {type(e).__name__}"}
 
 
 def _mmx_bin() -> str | None:
@@ -1101,10 +893,10 @@ def _degrade_with_cache(rows: list[dict]) -> tuple[list[dict], list[str]]:
 
 
 def _quota_hidden(name: str | None) -> bool:
-    """隐藏已退订的 Grok Win、已停用的 Antigravity 组以及已取消的豆包，历史展示同步过滤。"""
+    """隐藏已下线的 Grok、已停用的 Antigravity 组以及已取消的豆包，历史展示同步过滤。"""
     lowered = (name or "").strip().lower()
     return (
-        ("grok" in lowered and "win" in lowered)
+        "grok" in lowered
         or ("antigravity" in lowered and "claude" in lowered)
         or ("豆包" in lowered)
     )
@@ -1157,7 +949,6 @@ def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
         ("kimi_mine", lambda: kimi_row(0, "Kimi · 本人（948/年）")),
         ("kimi_shared", lambda: kimi_row(1, "Kimi · 副账号")),
         ("codex_auth", _codex_auth_accounts),
-        ("grok", lambda: [_grok("Grok · SuperGrok")]),
         ("minimax", lambda: [_minimax("MiniMax")]),
         ("antigravity", _agy),
     ]
@@ -1499,7 +1290,7 @@ def _load_finance() -> dict:
 
 
 _SVC_ICONS = [
-    ("ChatGPT", "🤖"), ("Kimi", "🌙"), ("Grok", "🚀"), ("Gemini", "♊"),
+    ("ChatGPT", "🤖"), ("Kimi", "🌙"), ("Gemini", "♊"),
     ("MiniMax", "🎬"), ("智谱", "🧠"), ("ChatGLM", "🧠"), ("中转", "🔀"),
     ("DeepSeek", "🔍"), ("Claude", "🎭"), ("iCloud", "☁️"), ("得到", "🎧"),
     ("微信读书", "📚"), ("百度网盘", "💾"), ("视频", "📺"),

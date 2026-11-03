@@ -120,13 +120,6 @@ class NormalizationTests(unittest.TestCase):
         bad = snapshot(openai_data(), account_id=7)
         self.assertNotEqual(quota.normalize_account(account(), bad, now=NOW)["status"], "ok")
 
-    def test_grok_uses_weekly_billing_timestamp_not_new_page_timestamp(self):
-        data = {"updated_at": iso(NOW), "seven_day": {"utilization": 4, "resets_at": iso(NOW + 86400)},
-                "grok_billing": {"weekly_status_code": 200, "weekly_updated_at": iso(NOW - 3600)}}
-        row = quota.normalize_account(account("grok", 10), snapshot(data, "grok", 10), now=NOW)
-        self.assertEqual(row["used_pct"], 4)
-        self.assertTrue(row["stale"])
-
     def test_antigravity_models_provide_weekly_quota(self):
         data = {"updated_at": iso(NOW), "antigravity_quota": {
             "gemini-3.8-flash-high": {"utilization": 8, "reset_time": iso(NOW + 7200)},
@@ -186,7 +179,7 @@ class MonitorIntegrationTests(unittest.TestCase):
     def test_configured_collectors_do_not_read_local_tokens_or_launch_clis(self):
         specs = [(3, "kimi", "kimi_mine"), (4, "kimi", "kimi_shared"),
                  (5, "minimax", "minimax"), (6, "openai", "codex_auth"),
-                 (9, "antigravity", "antigravity"), (10, "grok", "grok")]
+                 (9, "antigravity", "antigravity")]
         config = {"accounts": [{"id": i, "platform": p, "collector": c, "name": c} for i, p, c in specs]}
         expected = [{"name": "MiniMax", "status": "ok", "source": "sub2api"}]
         with mock.patch.dict(quota_report.os.environ, {"QUOTA_SOURCE": "auto"}), \
@@ -195,7 +188,6 @@ class MonitorIntegrationTests(unittest.TestCase):
              mock.patch.object(quota_report, "_load_kimi_keys", side_effect=AssertionError("local keys read")), \
              mock.patch.object(quota_report, "_codex_auth_accounts", side_effect=AssertionError("local OAuth queried")), \
              mock.patch.object(quota_report, "_minimax", side_effect=AssertionError("local CLI queried")), \
-             mock.patch.object(quota_report, "_grok", side_effect=AssertionError("local CLI queried")), \
              mock.patch.object(quota_report, "_agy", side_effect=AssertionError("local CLI queried")):
             self.assertEqual(quota_report.collect(), expected)
 
