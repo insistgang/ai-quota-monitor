@@ -131,6 +131,23 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(row["used_text"], "8%")
         self.assertNotIn("fiveh_pct", row)
 
+    def test_antigravity_three_quotas_extracted(self):
+        data = {"updated_at": iso(NOW), "antigravity_quota": {
+            "gemini-4-argon-high": {"utilization": 12, "reset_time": iso(NOW + 3600)},
+            "gemini-3.8-flash-high": {"utilization": 24, "reset_time": iso(NOW + 7200)},
+            "claude-sonnet-5-5-high": {"utilization": 5, "reset_time": iso(NOW + 10800)},
+        }}
+        row = quota.normalize_account(account("antigravity", 9), snapshot(data, "antigravity", 9), now=NOW)
+        self.assertEqual(row["status"], "ok")
+        self.assertIn("sub_quotas", row)
+        labels = {sq["label"]: sq["used_pct"] for sq in row["sub_quotas"]}
+        self.assertEqual(labels["Gemini 4 Argon"], 12)
+        self.assertEqual(labels["Gemini 3.8 Flash"], 24)
+        self.assertEqual(labels["Cloud (Claude)"], 5)
+        self.assertIn("Argon 12%", row["note"])
+        self.assertIn("3.8 Flash 24%", row["note"])
+        self.assertIn("Cloud (Claude) 5%", row["note"])
+
 
 class ConfigurationAndCollectionTests(unittest.TestCase):
     def config(self):

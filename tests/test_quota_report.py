@@ -506,7 +506,7 @@ class DailyDeltaTests(unittest.TestCase):
         self.assertIn("Codex · Mac", names)
         self.assertTrue(all("grok" not in name.lower() for name in names))
 
-    def test_doubao_history_is_restored_without_changing_other_usage(self):
+    def test_doubao_is_hidden_from_history_without_changing_other_usage(self):
         rows = self._daily_rows([
             ["2026-08-19T23:31:00", "豆包 · 标准套餐", "ok", "10", "10%", "08-24 00:00", ""],
             ["2026-08-20T20:31:00", "豆包 · 标准套餐", "ok", "18", "18%", "08-24 00:00", ""],
@@ -515,7 +515,6 @@ class DailyDeltaTests(unittest.TestCase):
         ])
         self.assertEqual(rows, [
             {"name": "Codex · Mac", "delta": 2.0, "reset": False, "partial": False},
-            {"name": "豆包 · 标准套餐", "delta": 8.0, "reset": False, "partial": False},
         ])
 
     def test_history_html_shows_consumption_on_a_reset_day(self):
@@ -1159,7 +1158,7 @@ class QuotaVisibilityTests(unittest.TestCase):
                 {"name": name, "status": "ok", "used_pct": 10,
                  "used_text": "10%", "reset": "?"}
                 for name in ("Codex · 1first@qq.com", "Codex · 1second@qq.com",
-                             "豆包 · 标准套餐")
+                             "MiniMax")
             ]
             with mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", config), \
                  mock.patch.object(quota_report, "_daily_deltas", return_value=[]), \
@@ -1170,7 +1169,7 @@ class QuotaVisibilityTests(unittest.TestCase):
 
         self.assertEqual(public.count('class="card"'), 2)
         self.assertEqual(public.count("Codex · 1***@qq.com"), 1)
-        self.assertIn("豆包 · 标准套餐", public)
+        self.assertIn("MiniMax", public)
         self.assertEqual(local.count('class="card"'), 3)
 
     def test_public_history_hides_only_configured_account(self):
@@ -1183,7 +1182,7 @@ class QuotaVisibilityTests(unittest.TestCase):
                 writer = csv.writer(fh)
                 writer.writerow(CSV_HEADER)
                 for name in ("Codex · 1first@qq.com", "Codex · 1second@qq.com",
-                             "豆包 · 标准套餐"):
+                             "MiniMax"):
                     writer.writerow(["2026-08-19T23:31:00", name, "ok", "10", "10%", "08-24 00:00", ""])
                     writer.writerow(["2026-08-20T20:31:00", name, "ok", "18", "18%", "08-24 00:00", ""])
             with mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", config), \
@@ -1193,14 +1192,14 @@ class QuotaVisibilityTests(unittest.TestCase):
 
         self.assertEqual(
             {row["name"] for _date, rows in public_rows for row in rows},
-            {"Codex · 1second@qq.com", "豆包 · 标准套餐"},
+            {"Codex · 1second@qq.com", "MiniMax"},
         )
         self.assertEqual(
             {row["name"] for _date, rows in local_rows for row in rows},
-            {"Codex · 1first@qq.com", "Codex · 1second@qq.com", "豆包 · 标准套餐"},
+            {"Codex · 1first@qq.com", "Codex · 1second@qq.com", "MiniMax"},
         )
 
-    def test_doubao_is_restored_to_dashboards_and_subscriptions(self):
+    def test_doubao_is_hidden_from_dashboards_and_subscriptions(self):
         names = ["豆包 · 体验套餐", "Kimi", "Codex · doubao@example.com",
                  "MiniMax", "Antigravity · Gemini 组"]
         rows = [{"name": name, "status": "ok", "used_pct": 10,
@@ -1214,13 +1213,13 @@ class QuotaVisibilityTests(unittest.TestCase):
              mock.patch.object(quota_report, "_daily_deltas", return_value=[]):
             for public in (False, True):
                 page = quota_report.render_html(rows, public=public)
-                self.assertIn("豆包 · 体验套餐", page)
-                self.assertIn("豆包会员", page)
+                self.assertNotIn("豆包 · 体验套餐", page)
                 for name in ("Kimi", "MiniMax", "Antigravity · Gemini 组"):
                     self.assertIn(name, page)
                 self.assertIn("Codex · d***@example.com", page)
                 self.assertIn("490 元/年", page)
         self.assertFalse(quota_report._quota_hidden("Codex · doubao@example.com"))
+        self.assertTrue(quota_report._quota_hidden("豆包 · 体验套餐"))
 
 
 class CollectSourceTests(unittest.TestCase):
@@ -1240,8 +1239,8 @@ class CollectSourceTests(unittest.TestCase):
         self.assertIn("Codex · first@163.com", names)
         self.assertIn("Codex · second@hotmail.com", names)
         self.assertIn("MiniMax", names)
-        self.assertIn("豆包", names)
-        self.assertEqual(len(names), 7)
+        self.assertNotIn("豆包", names)
+        self.assertEqual(len(names), 6)
 
 
 if __name__ == "__main__":
