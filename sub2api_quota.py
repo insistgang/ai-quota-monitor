@@ -176,6 +176,42 @@ def normalize_account(account: dict, snapshot: dict, *, now: float | None = None
             row.update(fiveh_pct=percent, fiveh_text=f"{percent:g}%", fiveh_reset=_when(reset))
             if account["platform"] == "antigravity":
                 row["fiveh_label"] = "Gemini 模型窗口"
+        if account["platform"] == "antigravity":
+            models = data.get("antigravity_quota") or {}
+            argon_candidates = [(_percent(w.get("utilization")), w.get("reset_time"))
+                                for n, w in models.items() if "gemini-4-argon" in n.lower()]
+            flash_candidates = [(_percent(w.get("utilization")), w.get("reset_time"))
+                                for n, w in models.items() if "gemini-3.8-flash" in n.lower() or ("gemini-3" in n.lower() and "flash" in n.lower() and "image" not in n.lower())]
+            cloud_candidates = [(_percent(w.get("utilization")), w.get("reset_time"))
+                                for n, w in models.items() if n.lower().startswith("claude")]
+
+            sub_quotas = []
+            if argon_candidates:
+                best_argon = max(argon_candidates, key=lambda item: item[0])
+                sub_quotas.append({
+                    "label": "Gemini 4 Argon",
+                    "used_pct": best_argon[0],
+                    "used_text": f"{best_argon[0]:g}%",
+                    "reset": _when(_epoch(best_argon[1])),
+                })
+            if flash_candidates:
+                best_flash = max(flash_candidates, key=lambda item: item[0])
+                sub_quotas.append({
+                    "label": "Gemini 3.8 Flash",
+                    "used_pct": best_flash[0],
+                    "used_text": f"{best_flash[0]:g}%",
+                    "reset": _when(_epoch(best_flash[1])),
+                })
+            if cloud_candidates:
+                best_cloud = max(cloud_candidates, key=lambda item: item[0])
+                sub_quotas.append({
+                    "label": "Cloud (Claude)",
+                    "used_pct": best_cloud[0],
+                    "used_text": f"{best_cloud[0]:g}%",
+                    "reset": _when(_epoch(best_cloud[1])),
+                })
+            if sub_quotas:
+                row["sub_quotas"] = sub_quotas
         notes = ["Sub2API", "数据 " + _when(captured)]
         plan = data.get("plan_type")
         if plan in {"free", "plus", "pro", "prolite", "team", "business", "enterprise"}:
@@ -183,7 +219,11 @@ def normalize_account(account: dict, snapshot: dict, *, now: float | None = None
         if "week" not in parsed:
             notes.append("无周额度" if account["platform"] == "minimax" else "上游未提供周额度")
         if account["platform"] == "antigravity":
-            notes.append("Gemini 文本模型最高使用率")
+            if "sub_quotas" in row:
+                parts = [f"{sq['label'].replace('Gemini ', '')} {sq['used_text']}" for sq in row["sub_quotas"]]
+                notes.append(" · ".join(parts))
+            else:
+                notes.append("Gemini 文本模型最高使用率")
         if expired_short:
             notes.append("已隐藏过期短时窗口")
         if stale:
@@ -192,6 +232,34 @@ def normalize_account(account: dict, snapshot: dict, *, now: float | None = None
         return row
     except (TypeError, ValueError, AttributeError, OverflowError, OSError):
         return _error(account, "Sub2API 额度数据无效")
+
+
+def split_antigravity_rows(row: dict) -> list[dict]:
+    """将 Antigravity 单账号拆分为 3 栏独立卡片：Gemini 4 Argon、Gemini 3.8 Flash 与 Cloud (Claude)。"""
+    if not row.get("sub_quotas"):
+        return [row]
+    sub_rows = []
+    label_map = {
+        "Gemini 4 Argon": "Gemini · 4 Argon",
+        "Gemini 3.8 Flash": "Gemini · 3.8 Flash",
+        "Cloud (Claude)": "Gemini · Cloud (Claude)",
+    }
+    for sq in row["sub_quotas"]:
+        label = sq["label"]
+        name = label_map.get(label, f"Gemini · {label}")
+        sub_rows.append({
+            "name": name,
+            "status": row.get("status", "ok"),
+            "source": row.get("source", "sub2api"),
+            "account_id": row.get("account_id"),
+            "captured_at": row.get("captured_at"),
+            "stale": row.get("stale", False),
+            "used_pct": sq.get("used_pct"),
+            "used_text": sq.get("used_text", "—"),
+            "reset": sq.get("reset", "?"),
+            "note": f"Sub2API · 数据 {_when(row.get('captured_at'))} · Google Antigravity",
+        })
+    return sub_rows
 
 
 def fetch_snapshot(config: dict, accounts: list[dict]) -> dict:
@@ -239,7 +307,13 @@ def collect(config: dict, *, retry_attempts: int = 0, retry_delay: float = 0,
         pending = [a for a in pending if results[a["id"]]["status"] != "ok" or results[a["id"]].get("stale")]
         if not pending:
             break
-    rows = [results[account["id"]] for account in config["accounts"]]
+    rows = []
+    for account in config["accounts"]:
+        res = results[account["id"]]
+        if account.get("platform") == "antigravity" and res.get("status") == "ok" and res.get("sub_quotas"):
+            rows.extend(split_antigravity_rows(res))
+        else:
+            rows.append(res)
     for account in config.get("unmapped_accounts", []):
         rows.append({"name": account["name"], "status": "未接入 Sub2API，未执行本地刷新",
                      "source": "sub2api", "retryable": False})

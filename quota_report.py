@@ -251,6 +251,13 @@ def _doubao_pct_value_is_valid(value: object) -> bool:
 
 
 def _doubao_reset_text_is_valid(value: object) -> bool:
+    """重置文案要么是固定时刻，要么是“开始使用后计时”这种滚动窗口提示。
+
+    _doubao_reset() 会把页面上的“开始使用后计时”原样保留，校验器若只认
+    MM-DD HH:MM，滚动窗口套餐的快照会被判无效，缓存回退随之失效。
+    """
+    if value == "开始使用后计时":
+        return True
     if not isinstance(value, str):
         return False
     match = re.fullmatch(r"(\d{2})-(\d{2})\s+(\d{2}):(\d{2})", value)
@@ -264,7 +271,7 @@ def _doubao_reset_text_is_valid(value: object) -> bool:
 
 
 def _doubao_fiveh_reset_text_is_valid(value: object) -> bool:
-    return value == "开始使用后计时" or _doubao_reset_text_is_valid(value)
+    return _doubao_reset_text_is_valid(value)
 
 
 def _read_doubao_snapshot(cache_path: Path = DOUBAO_QUOTA_CACHE) -> dict | None:
@@ -448,7 +455,12 @@ def _import_doubao_dom(
 
 
 def _doubao_quota(label: str = "豆包 · 个人会员") -> dict:
-    """优先实时读取 Chrome DOM；失败时使用本地最小快照并标明新鲜度。"""
+    """优先实时读取 Chrome DOM；失败时使用本地最小快照并标明新鲜度。
+
+    豆包额度只能从已登录 Chrome 的额度页读取，页面没开属于外部环境状态，不是采集
+    故障。降级行标记 retryable=False，不占用发布容错额度——否则这个来源会长期占满
+    额度，让任何一次别的来源抖动都取消整轮发布。具体失败原因仍写在状态和备注里。
+    """
     try:
         return _doubao_row_from_snapshot(_sync_doubao_chrome())
     except Exception as exc:  # noqa: BLE001
@@ -462,12 +474,14 @@ def _doubao_quota(label: str = "豆包 · 个人会员") -> dict:
                     sync_error=public_error,
                 )
                 row["cache_fallback"] = True
+                row["retryable"] = False
                 return row
             except Exception:  # noqa: BLE001
                 pass
         return {
             "name": label,
             "status": f"{_doubao_short_error(public_error)} · 无缓存",
+            "retryable": False,
         }
 
 
@@ -893,13 +907,9 @@ def _degrade_with_cache(rows: list[dict]) -> tuple[list[dict], list[str]]:
 
 
 def _quota_hidden(name: str | None) -> bool:
-    """隐藏已下线的 Grok、已停用的 Antigravity 组以及已取消的豆包，历史展示同步过滤。"""
+    """隐藏已下线的 Grok、已停用的 Antigravity 组及已移除的豆包，历史展示同步过滤。"""
     lowered = (name or "").strip().lower()
-    return (
-        "grok" in lowered
-        or ("antigravity" in lowered and "claude" in lowered)
-        or ("豆包" in lowered)
-    )
+    return "grok" in lowered or ("antigravity" in lowered and "claude" in lowered and "gemini" not in lowered) or ("豆包" in lowered and "codex" not in lowered)
 
 
 def _public_hidden_codex_names() -> set[str]:
@@ -1155,6 +1165,9 @@ def render(rows: list[dict]) -> str:
         if r.get("note"):
             s += f"，{r['note']}"
         lines.append(s)
+        if r.get("sub_quotas"):
+            for sq in r["sub_quotas"]:
+                lines.append(f"  · {sq['label']}：已用 {sq['used_text']}，重置 {sq['reset']}")
     extra = _alerts_text(alerts)
     if extra:
         lines.append("")
@@ -1200,9 +1213,22 @@ def _card(r: dict, alert: dict | None = None) -> str:
             fp = r.get("fiveh_pct")
             fc = _color(fp)
             window_label = _html_text(r.get("fiveh_label", "5h 窗"))
-            fiveh = f"""<div class="sub">{window_label}</div>
+            fiveh = f"""<div class="sub-box"><div class="sub">{window_label}</div>
 <div class="bar small"><div class="fill" style="width:{min(100, max(0, fp or 0))}%;background:{fc}"></div></div>
-<div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div>"""
+<div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div></div>"""
+    sub_bars = ""
+    if r.get("sub_quotas"):
+        blocks = []
+        for sq in r["sub_quotas"]:
+            sp = sq.get("used_pct")
+            sc = _color(sp)
+            label = _html_text(sq["label"])
+            used_txt = _html_text(sq.get("used_text", "—"))
+            reset_txt = _html_text(sq.get("reset", "?"))
+            blocks.append(f"""<div class="sub-box"><div class="sub">{label}</div>
+<div class="bar small"><div class="fill" style="width:{min(100, max(0, sp or 0))}%;background:{sc}"></div></div>
+<div class="meta">已用 {used_txt} · 重置 {reset_txt}</div></div>""")
+        sub_bars = "".join(blocks)
     note = f"<div class='meta dim'>{_html_text(r['note'])}</div>" if r.get("note") else ""
     urgent = " urgent" if alert else ""
     if r.get("cache_fallback"):
@@ -1216,11 +1242,11 @@ def _card(r: dict, alert: dict | None = None) -> str:
             pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
     return f"""<div class="card{urgent}"><div class="top"><span class="name">{name}</span>
 {pill}</div>
-<div class="pct" style="color:{c}">{pct_txt}</div>
-<div class="remain">{rem_txt}</div>
+<div class="stat-row"><div class="pct" style="color:{c}">{pct_txt}</div>
+<div class="remain">{rem_txt}</div></div>
 <div class="bar"><div class="fill" style="width:{min(100, max(0, pct or 0))}%;background:{c}"></div></div>
-<div class="meta">{meta_line}</div>
-{fiveh}{note}</div>"""
+<div class="meta main-meta">{meta_line}</div>
+{sub_bars}{fiveh}{note}</div>"""
 
 
 _finance_md = os.environ.get("QUOTA_FINANCE_MD", "").strip()
@@ -1747,75 +1773,93 @@ async function poll(){
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
 *{{box-sizing:border-box}}
-body{{background:#0d1117;color:#e6edf3;font-family:-apple-system,"PingFang SC",sans-serif;padding:28px;max-width:1080px;margin:0 auto}}
-h1{{font-size:22px;margin:0 0 4px}} .ts{{color:#8b949e;font-size:13px;margin-bottom:6px}}
-h2{{font-size:17px;margin:26px 0 8px}}
-a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
-.nav{{position:sticky;top:10px;z-index:20;display:flex;gap:6px;width:max-content;max-width:100%;padding:5px;margin:0 0 20px;background:rgba(22,27,34,.94);border:1px solid #30363d;border-radius:11px;backdrop-filter:blur(12px)}}
-.nav a{{color:#8b949e;padding:7px 12px;border-radius:7px;font-size:13px;font-weight:600;white-space:nowrap}}
-.nav a:hover{{color:#e6edf3;text-decoration:none;background:#21262d}}
-.nav a.active{{color:#fff;background:#238636}}
-.update-notice{{position:fixed;right:18px;bottom:18px;z-index:30;background:#1f6feb;color:#fff;border-radius:10px;padding:10px 12px;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,.35)}}
-.update-notice button{{margin-left:8px;border:0;border-radius:6px;padding:5px 9px;background:#fff;color:#0969da;cursor:pointer;font-weight:600}}
+body{{background:radial-gradient(ellipse 80% 50% at 50% -15%,rgba(56,139,253,.13),transparent),#0a0e14;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;padding:32px 28px 48px;max-width:1140px;margin:0 auto;line-height:1.45;-webkit-font-smoothing:antialiased}}
+h1{{font-size:24px;font-weight:700;letter-spacing:-.02em;margin:0 0 6px;color:#f0f6fc}}
+.ts{{color:#8b949e;font-size:13px;margin-bottom:20px;line-height:1.5}}
+h2{{font-size:17px;font-weight:600;letter-spacing:-.01em;color:#f0f6fc;margin:30px 0 12px}}
+a{{color:#58a6ff;text-decoration:none;transition:color .15s}} a:hover{{color:#79c0ff;text-decoration:underline}}
+.nav{{position:sticky;top:12px;z-index:20;display:flex;gap:6px;width:max-content;max-width:100%;padding:5px;margin:0 0 24px;background:rgba(22,27,34,.82);border:1px solid rgba(240,246,252,.1);border-radius:12px;backdrop-filter:blur(16px) saturate(180%);-webkit-backdrop-filter:blur(16px) saturate(180%);box-shadow:0 8px 24px rgba(0,0,0,.32)}}
+.nav a{{color:#8b949e;padding:7px 14px;border-radius:8px;font-size:13px;font-weight:600;white-space:nowrap;transition:all .18s ease}}
+.nav a:hover{{color:#f0f6fc;text-decoration:none;background:rgba(110,118,129,.16)}}
+.nav a.active{{color:#fff;background:linear-gradient(180deg,#2ea043 0%,#238636 100%);box-shadow:0 2px 6px rgba(35,134,54,.35),inset 0 1px 0 rgba(255,255,255,.15)}}
+.update-notice{{position:fixed;right:20px;bottom:20px;z-index:30;background:linear-gradient(135deg,#1f6feb,#388bfd);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:10px 14px;font-size:13px;font-weight:500;box-shadow:0 10px 30px rgba(0,0,0,.45)}}
+.update-notice button{{margin-left:10px;border:0;border-radius:7px;padding:5px 10px;background:#fff;color:#0969da;cursor:pointer;font-weight:600;transition:transform .15s}}
+.update-notice button:hover{{transform:scale(1.03)}}
 [hidden]{{display:none!important}}
-table{{border-collapse:collapse;width:100%}} td{{border:1px solid #30363d;padding:9px 12px;font-size:15px}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}}
-.card{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 18px}}
-.top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}}
-.name{{font-size:14px;font-weight:600}}
-.pill{{font-size:11px;padding:2px 8px;border-radius:99px}}
-.pill.ok{{background:rgba(63,185,80,.15);color:#3fb950}}
-.pill.bad{{background:rgba(248,81,73,.15);color:#f85149}}
-.pill.stale{{background:rgba(139,148,158,.18);color:#8b949e}}
-.pill.warn{{background:rgba(240,136,62,.18);color:#f0883e}}
-.card.urgent{{border-color:#f0883e}}
-.pct{{font-size:34px;font-weight:700;letter-spacing:-1px;margin:2px 0 4px}}
-.remain{{font-size:13px;color:#8b949e;margin-bottom:8px}}
-.alertband{{background:rgba(240,136,62,.1);border:1px solid rgba(240,136,62,.45);border-radius:10px;padding:12px 16px;margin:12px 0 18px}}
-.alertband h3{{margin:0 0 8px;font-size:15px;color:#f0883e}}
-.alertband ul{{margin:0;padding-left:18px}}
-.alertband li{{font-size:14px;margin:5px 0}}
-.bar{{height:8px;background:#21262d;border-radius:99px;overflow:hidden}}
+table{{border-collapse:separate;border-spacing:0;width:100%;background:rgba(22,27,34,.85);border:1px solid rgba(48,54,61,.85);border-radius:14px;overflow:hidden}}
+td{{border-bottom:1px solid rgba(48,54,61,.6);padding:10px 14px;font-size:14px}}
+tr:last-child td{{border-bottom:0}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;align-items:stretch}}
+.card{{display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(28,34,44,.92) 0%,rgba(19,24,32,.96) 100%);border:1px solid rgba(48,54,61,.85);border-radius:16px;padding:18px 20px;box-shadow:0 4px 18px rgba(0,0,0,.22),inset 0 1px 0 rgba(255,255,255,.04);transition:transform .2s cubic-bezier(.16,1,.3,1),border-color .2s ease,box-shadow .2s ease}}
+.top{{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}}
+.name{{font-size:15px;font-weight:600;color:#f0f6fc;letter-spacing:-.01em;line-height:1.3}}
+.pill{{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;letter-spacing:.02em;flex-shrink:0;border:1px solid transparent}}
+.pill.ok{{background:rgba(63,185,80,.12);color:#3fb950;border-color:rgba(63,185,80,.28)}}
+.pill.bad{{background:rgba(248,81,73,.14);color:#ff7b72;border-color:rgba(248,81,73,.32)}}
+.pill.stale{{background:rgba(139,148,158,.14);color:#8b949e;border-color:rgba(139,148,158,.28)}}
+.pill.warn{{background:rgba(240,136,62,.14);color:#f0883e;border-color:rgba(240,136,62,.32)}}
+.card.urgent{{border-color:rgba(240,136,62,.55);background:linear-gradient(180deg,rgba(240,136,62,.07) 0%,rgba(19,24,32,.96) 48%)}}
+.stat-row{{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:2px 0 10px}}
+.pct{{font-size:36px;font-weight:700;letter-spacing:-1.5px;line-height:1;font-variant-numeric:tabular-nums}}
+.remain{{font-size:12.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.12);border:1px solid rgba(240,246,252,.06);padding:3px 9px;border-radius:7px;font-variant-numeric:tabular-nums}}
+.alertband{{background:linear-gradient(135deg,rgba(240,136,62,.12) 0%,rgba(210,153,34,.04) 100%);border:1px solid rgba(240,136,62,.35);border-left:4px solid #f0883e;border-radius:14px;padding:14px 18px;margin:18px 0 22px;box-shadow:0 4px 16px rgba(0,0,0,.18)}}
+.alertband h3{{margin:0 0 8px;font-size:14.5px;font-weight:600;color:#f0883e}}
+.alertband ul{{margin:0;padding-left:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px 18px}}
+.alertband li{{font-size:13.5px;color:#e6edf3;margin:0}}
+.bar{{height:8px;background:rgba(110,118,129,.18);border-radius:99px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.35)}}
 .bar.small{{height:5px;margin-top:4px}}
-.fill{{height:100%;border-radius:99px;transition:width .4s}}
-.meta{{font-size:13px;color:#c9d1d9;margin-top:8px}}
+.fill{{height:100%;border-radius:99px;transition:width .5s cubic-bezier(.22,1,.36,1)}}
+.meta{{font-size:12.5px;color:#c9d1d9;margin-top:8px;font-variant-numeric:tabular-nums}}
+.main-meta{{margin-bottom:4px}}
+.sub-box{{background:rgba(13,17,23,.52);border:1px solid rgba(48,54,61,.65);border-radius:10px;padding:9px 12px;margin-top:10px}}
+.sub-box .sub{{margin-top:0;margin-bottom:4px;font-size:11px;font-weight:600;color:#8b949e;letter-spacing:.02em}}
+.sub-box .meta{{margin-top:6px;font-size:12px;color:#8b949e}}
 .meta.nonai{{padding:6px 0;border-bottom:1px dashed #21262d}}
-.card:hover,.scard:hover{{border-color:#58a6ff}}
-.sgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}}
-.scard{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px 16px;transition:border-color .2s}}
-.scard.mini{{padding:10px 14px}}
-.sname{{font-size:14px;font-weight:600;margin-bottom:6px}}
-.scost{{font-size:19px;font-weight:700;color:#58a6ff;margin-bottom:6px}}
-.smeta{{font-size:13px;color:#8b949e}}
-.cd{{font-size:11px;padding:2px 8px;border-radius:99px;margin-left:6px;white-space:nowrap}}
-.cd.green{{background:rgba(63,185,80,.15);color:#3fb950}}
-.cd.yellow{{background:rgba(210,153,34,.15);color:#d29922}}
-.cd.red{{background:rgba(248,81,73,.15);color:#f85149}}
-.totalband{{background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);border-radius:10px;padding:10px 16px;font-size:15px;font-weight:600;margin-bottom:14px}}
-table.ledger td{{font-size:14px;padding:7px 12px}}
-table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap}}
-.meta.dim{{color:#8b949e}}
-.sub{{font-size:11px;color:#8b949e;margin-top:12px}}
-.msg{{font-size:13px;color:#d29922}}
-.hday{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px 16px;margin-bottom:10px}}
-.hdate{{font-size:13px;font-weight:600;color:#8b949e;margin-bottom:8px}}
-.hrow{{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:13px}}
+.card:hover,.scard:hover{{transform:translateY(-2px);border-color:rgba(88,166,255,.55);box-shadow:0 10px 28px rgba(0,0,0,.36),0 0 0 1px rgba(88,166,255,.12)}}
+.sgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}}
+.scard{{background:linear-gradient(180deg,rgba(28,34,44,.9) 0%,rgba(19,24,32,.95) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:15px 18px;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}}
+.scard.mini{{padding:11px 15px}}
+.sname{{font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:6px}}
+.scost{{font-size:19px;font-weight:700;color:#58a6ff;margin-bottom:6px;font-variant-numeric:tabular-nums}}
+.smeta{{font-size:12.5px;color:#8b949e}}
+.cd{{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;margin-left:6px;white-space:nowrap}}
+.cd.green{{background:rgba(63,185,80,.14);color:#3fb950}}
+.cd.yellow{{background:rgba(210,153,34,.14);color:#d29922}}
+.cd.red{{background:rgba(248,81,73,.14);color:#ff7b72}}
+.totalband{{background:linear-gradient(135deg,rgba(88,166,255,.12),rgba(88,166,255,.04));border:1px solid rgba(88,166,255,.32);border-radius:12px;padding:12px 18px;font-size:15px;font-weight:600;margin-bottom:16px}}
+table.ledger td{{font-size:14px;padding:9px 14px}}
+table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}}
+.meta.dim{{color:#6e7681;font-size:11.5px;margin-top:auto;padding-top:12px;border-top:1px solid rgba(48,54,61,.45)}}
+.card > .main-meta + .meta.dim{{margin-top:auto}}
+.card > .sub-box + .meta.dim{{margin-top:12px}}
+.sub{{font-size:11.5px;color:#8b949e;margin-top:12px;line-height:1.5}}
+.msg{{font-size:13px;color:#d29922;margin-top:6px}}
+.hday{{background:linear-gradient(180deg,rgba(28,34,44,.88) 0%,rgba(19,24,32,.94) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:14px 18px;margin-bottom:12px;box-shadow:0 2px 10px rgba(0,0,0,.16)}}
+.hdate{{font-size:13px;font-weight:600;color:#8b949e;margin-bottom:10px;font-variant-numeric:tabular-nums}}
+.hrow{{display:flex;align-items:center;gap:12px;margin:6px 0;font-size:13px}}
 .hrow.dim{{color:#8b949e}}
-.hname{{width:170px;flex-shrink:0}}
-.hbar{{flex:1;height:10px;background:#21262d;border-radius:99px;overflow:hidden}}
-.hfill{{height:100%;background:#58a6ff;border-radius:99px}}
-.hval{{width:74px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0}}
-.section-head{{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-top:26px}}
-.section-head h2{{margin:0 0 8px}}
-.more-link{{font-size:13px;white-space:nowrap}}
-.history-tools{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:2px 0 12px}}
-.range-switch{{display:flex;gap:5px}}
-.range-switch button,.source-filter select{{border:1px solid #30363d;border-radius:7px;background:#161b22;color:#c9d1d9;padding:7px 10px;font-size:12px}}
+.hname{{width:176px;flex-shrink:0;color:#c9d1d9;font-weight:500}}
+.hbar{{flex:1;height:9px;background:rgba(110,118,129,.16);border-radius:99px;overflow:hidden}}
+.hfill{{height:100%;background:linear-gradient(90deg,#1f6feb 0%,#58a6ff 100%);border-radius:99px}}
+.hval{{width:76px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0;font-variant-numeric:tabular-nums}}
+.section-head{{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-top:30px}}
+.section-head h2{{margin:0 0 10px}}
+.more-link{{font-size:13px;font-weight:500;white-space:nowrap}}
+.history-tools{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 0 14px}}
+.range-switch{{display:flex;gap:6px}}
+.range-switch button,.source-filter select{{border:1px solid rgba(48,54,61,.9);border-radius:8px;background:#161b22;color:#c9d1d9;padding:7px 12px;font-size:12.5px;font-weight:500;transition:all .15s}}
 .range-switch button{{cursor:pointer}}
-.range-switch button.active{{background:#1f6feb;border-color:#1f6feb;color:#fff}}
-.source-filter{{display:flex;align-items:center;gap:7px;color:#8b949e;font-size:12px}}
+.range-switch button:hover{{border-color:#58a6ff;color:#f0f6fc}}
+.range-switch button.active{{background:#1f6feb;border-color:#1f6feb;color:#fff;box-shadow:0 2px 8px rgba(31,111,235,.35)}}
+.source-filter{{display:flex;align-items:center;gap:8px;color:#8b949e;font-size:12.5px}}
+@media(min-width:960px){{
+  .grid{{grid-template-columns:repeat(3,1fr)}}
+}}
+@media(min-width:601px) and (max-width:959px){{
+  .grid{{grid-template-columns:repeat(2,1fr)}}
+}}
 @media(max-width:600px){{
-  body{{padding:18px 14px}}
+  body{{padding:18px 14px 32px}}
   .nav{{top:6px;width:100%;justify-content:space-between}}
   .nav a{{padding:7px 9px}}
   .grid{{grid-template-columns:1fr}}
