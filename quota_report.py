@@ -53,6 +53,10 @@ LAST_GOOD_JSON = Path(os.environ.get(
     "QUOTA_LAST_GOOD",
     str(HOME / ".cache/ai-quota-monitor/last-good.json"),
 ))
+AGY_GROUPS_CACHE = Path(os.environ.get(
+    "QUOTA_AGY_GROUPS_CACHE",
+    str(HOME / ".cache/ai-quota-monitor/agy-groups.json"),
+))
 DOUBAO_APPLESCRIPT = Path(__file__).with_name("scripts") / "read_doubao_quota.applescript"
 HTTP_TIMEOUT = 15
 SOURCE_MAX_AGE_SECONDS = 5 * 60
@@ -617,8 +621,11 @@ def _tmux_slash_probe(cmd: str, slash: str, wait_boot: int = 12, wait_panel: int
 
 
 def _parse_refreshes_in(s: str) -> str:
-    """'Refreshes in 74h 29m' → 绝对时间 %m-%d %H:%M"""
-    m = re.search(r"(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?", s)
+    """'Refreshes in 74h 29m' 或 '3 hours, 59 minutes' → 绝对时间 %m-%d %H:%M"""
+    m = re.search(
+        r"(?:(\d+)\s*(?:d|days?))?[,\s]*(?:(\d+)\s*(?:h|hours?))?[,\s]*(?:(\d+)\s*(?:m|minutes?))?",
+        s,
+    )
     if not m or not any(m.groups()):
         return "?"
     d, h, mi = (int(g) if g else 0 for g in m.groups())
@@ -631,8 +638,11 @@ def _agy_parse_group(text: str, marker: str) -> dict | None:
     if marker not in text:
         return None
     seg = text.split(marker, 1)[1][:2000]
+    for stop in ("GEMINI MODELS", "CLAUDE AND GPT MODELS", "GEMINI 4 ARGON", "Within each group"):
+        if stop != marker and stop in seg:
+            seg = seg.split(stop, 1)[0]
     m_week = re.search(
-        r"Weekly Limit Remaining\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*"
+        r"(?:Weekly Limit Remaining|Gemini 4 Argon Weekly Limit)\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*"
         r"(?:[\d.]+%\s+remaining\s*·\s*)?Refreshes in ([^\n]+)",
         seg,
     )
@@ -641,20 +651,116 @@ def _agy_parse_group(text: str, marker: str) -> dict | None:
         r"(?:[\d.]+%\s+remaining\s*·\s*)?Refreshes in ([^\n]+)",
         seg,
     )
+    m_5h_disabled = re.search(
+        r"Five Hour Limit Remaining\s*\n\s*Disabled:\s*You have hit your 5-hour limit[^\n]*?refresh in ([^\n.]+)",
+        seg,
+        re.IGNORECASE,
+    )
     if not m_week:
         return None
     week_left = float(m_week.group(1))
+    used_week = round(100 - week_left, 1)
     row = {
-        "used_pct": round(100 - week_left, 1),
-        "used_text": f"{100 - week_left:g}%",
+        "used_pct": used_week,
+        "used_text": f"{used_week:g}%",
         "reset": _parse_refreshes_in(m_week.group(2)),
     }
     if m_5h:
         left5 = float(m_5h.group(1))
-        row["fiveh_pct"] = round(100 - left5, 1)
-        row["fiveh_text"] = f"{100 - left5:g}%"
+        used_5h = round(100 - left5, 1)
+        row["fiveh_pct"] = used_5h
+        row["fiveh_text"] = f"{used_5h:g}%"
         row["fiveh_reset"] = _parse_refreshes_in(m_5h.group(2))
+    elif m_5h_disabled:
+        row["fiveh_pct"] = 100.0
+        row["fiveh_text"] = "100%"
+        row["fiveh_reset"] = _parse_refreshes_in(m_5h_disabled.group(1))
     return row
+
+
+def _load_agy_groups_cache() -> dict[str, dict]:
+    try:
+        payload = json.loads(AGY_GROUPS_CACHE.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("groups"), dict):
+            return {}
+        return payload
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_agy_groups_cache(groups: dict[str, dict]) -> None:
+    try:
+        AGY_GROUPS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        AGY_GROUPS_CACHE.write_text(
+            json.dumps({"captured_at": time.time(), "groups": groups}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _enrich_antigravity_rows(rows: list[dict]) -> list[dict]:
+    """为 Sub2API 拆出的 Gemini · 3.8 Flash / Gemini · Claude 补齐周额度 + 5h 双窗口。"""
+    needs_enrichment = any(
+        r.get("status") == "ok"
+        and r.get("name") in {"Gemini · 3.8 Flash", "Gemini · Claude"}
+        and r.get("fiveh_pct") is None
+        and r.get("window_kind") == "5h"
+        for r in rows
+    )
+    if not needs_enrichment:
+        return rows
+
+    cache = _load_agy_groups_cache()
+    captured_at = cache.get("captured_at")
+    groups = cache.get("groups") if isinstance(cache.get("groups"), dict) else {}
+    cache_fresh = isinstance(captured_at, (int, float)) and 0 <= time.time() - float(captured_at) <= 1800
+
+    if not cache_fresh or "Gemini · 3.8 Flash" not in groups:
+        text = _tmux_slash_probe(_agy_bin(), "/usage", wait_boot=12, wait_panel=6, pre_enter=False)
+        if text:
+            parsed_groups: dict[str, dict] = {}
+            for marker, target_name in (
+                ("GEMINI MODELS", "Gemini · 3.8 Flash"),
+                ("CLAUDE AND GPT MODELS", "Gemini · Claude"),
+                ("GEMINI 4 ARGON", "Gemini · 4 Argon"),
+            ):
+                g = _agy_parse_group(text, marker)
+                if g:
+                    parsed_groups[target_name] = g
+            if parsed_groups:
+                groups = {**groups, **parsed_groups}
+                _save_agy_groups_cache(groups)
+
+    enriched = []
+    for r in rows:
+        name = r.get("name")
+        if (
+            r.get("status") == "ok"
+            and name in {"Gemini · 3.8 Flash", "Gemini · Claude"}
+            and r.get("fiveh_pct") is None
+            and r.get("window_kind") == "5h"
+            and isinstance(groups.get(name), dict)
+        ):
+            g = groups[name]
+            week_pct = g.get("used_pct")
+            week_reset = g.get("reset")
+            if week_pct is not None and week_reset:
+                updated = {
+                    **r,
+                    "fiveh_pct": r.get("used_pct"),
+                    "fiveh_text": r.get("used_text", "—"),
+                    "fiveh_reset": r.get("reset", "?"),
+                    "fiveh_label": "5h 窗",
+                    "used_pct": week_pct,
+                    "used_text": g.get("used_text", f"{week_pct:g}%"),
+                    "reset": week_reset,
+                    "window_kind": "dual",
+                }
+                enriched.append(updated)
+                continue
+        enriched.append(r)
+    return enriched
 
 
 def _agy() -> list[dict]:
@@ -945,7 +1051,9 @@ def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
     if config:
         covered = {a["collector"] for a in config["accounts"]}
         covered.update(a["collector"] for a in config.get("unmapped_accounts", []))
-        rows = sub2api_quota.collect(config, retry_attempts=retry_attempts, retry_delay=retry_delay)
+        rows = _enrich_antigravity_rows(
+            sub2api_quota.collect(config, retry_attempts=retry_attempts, retry_delay=retry_delay)
+        )
 
     keys = None
 
@@ -1187,10 +1295,28 @@ def _color(pct) -> str:
     return "#f85149"
 
 
+def _provider_meta(raw_name: str) -> tuple[str, str, str]:
+    low = (raw_name or "").lower()
+    if "codex" in low:
+        return ("codex", "OpenAI · Codex", "⚡")
+    if "claude" in low:
+        return ("claude", "Anthropic · Claude", "🎭")
+    if "argon" in low:
+        return ("argon", "Google · Argon", "♊")
+    if "gemini" in low or "antigravity" in low:
+        return ("gemini", "Google · Gemini", "✨")
+    if "kimi" in low:
+        return ("kimi", "Moonshot · Kimi", "🌙")
+    if "minimax" in low:
+        return ("minimax", "MiniMax · Coding", "🎬")
+    return ("other", "AI 额度", "🤖")
+
+
 def _card(r: dict, alert: dict | None = None) -> str:
     name = _html_text(r["name"])
+    pkey, pbadge, picon = _provider_meta(r["name"])
     if r.get("status") != "ok":
-        return f"""<div class="card"><div class="top"><span class="name">{name}</span>
+        return f"""<div class="card" data-provider="{pkey}"><div class="top"><div class="title-wrap"><span class="pbadge">{picon} {pbadge}</span><span class="name">{name}</span></div>
 <span class="pill bad">异常</span></div><div class="msg">{_html_text(r['status'])}</div></div>"""
     rem = _remain_pct(r)
     # 没有周额度、只有短时/5h 窗口的模型（如 MiniMax）：主卡片直接展示短时窗口，避免显示空的"本周已用 未提供"
@@ -1200,22 +1326,40 @@ def _card(r: dict, alert: dict | None = None) -> str:
         rem_txt = f"剩 {rem:g}%" if rem is not None else ""
         c = _color(pct)
         window_label = _html_text(r.get("fiveh_label", "5h 窗"))
+        win_tag_label = f"⏱️ {window_label}周期配额"
         meta_line = f"{window_label}已用 {pct_txt} · 重置 {_html_text(r.get('fiveh_reset', '?'))}"
-        fiveh = ""
+        fiveh = (
+            '<div class="sub-box single-win">'
+            '<div class="sub-head"><span class="sub">♾️ 周期配额模式</span>'
+            '<span class="sub-tag">滚动短窗</span></div>'
+            '<div class="meta">按 5 小时滚动窗口独立计量，不设额外周总额度上限</div></div>'
+        )
     else:
         pct = r.get("used_pct")
         pct_txt = f"{pct:g}%" if pct is not None else "—"
         rem_txt = f"剩 {rem:g}%" if rem is not None else ""
         c = _color(pct)
+        win_tag_label = "📅 本周额度（周窗口）"
         meta_line = f"本周已用 {_html_text(r.get('used_text', '?'))} · 重置 {_html_text(r.get('reset', '?'))}"
         fiveh = ""
         if r.get("fiveh_text"):
             fp = r.get("fiveh_pct")
             fc = _color(fp)
+            f_rem = _remain_pct(r, "fiveh_pct")
+            f_rem_badge = f"<span class='sub-rem'>剩 {f_rem:g}%</span>" if f_rem is not None else ""
+            f_pct_badge = f"<span class='sub-pct' style='color:{fc}'>{fp:g}%</span>" if fp is not None else ""
+            f_exh = " exhausted" if (fp is not None and fp >= 100) else ""
             window_label = _html_text(r.get("fiveh_label", "5h 窗"))
-            fiveh = f"""<div class="sub-box"><div class="sub">{window_label}</div>
+            fiveh = f"""<div class="sub-box{f_exh}"><div class="sub-head"><span class="sub">⚡ {window_label}（5h 限流窗）</span><span class="sub-stats">{f_pct_badge}{f_rem_badge}</span></div>
 <div class="bar small"><div class="fill" style="width:{min(100, max(0, fp or 0))}%;background:{fc}"></div></div>
 <div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div></div>"""
+        elif not r.get("sub_quotas"):
+            fiveh = (
+                '<div class="sub-box single-win">'
+                '<div class="sub-head"><span class="sub">♾️ 独立周配额池</span>'
+                '<span class="sub-tag">仅周窗口</span></div>'
+                '<div class="meta">直接按 7 天周额度扣减，无 5 小时短时窗口限制</div></div>'
+            )
     sub_bars = ""
     if r.get("sub_quotas"):
         blocks = []
@@ -1225,7 +1369,7 @@ def _card(r: dict, alert: dict | None = None) -> str:
             label = _html_text(sq["label"])
             used_txt = _html_text(sq.get("used_text", "—"))
             reset_txt = _html_text(sq.get("reset", "?"))
-            blocks.append(f"""<div class="sub-box"><div class="sub">{label}</div>
+            blocks.append(f"""<div class="sub-box"><div class="sub-head"><span class="sub">{label}</span><span class="sub-pct" style="color:{sc}">{used_txt}</span></div>
 <div class="bar small"><div class="fill" style="width:{min(100, max(0, sp or 0))}%;background:{sc}"></div></div>
 <div class="meta">已用 {used_txt} · 重置 {reset_txt}</div></div>""")
         sub_bars = "".join(blocks)
@@ -1236,17 +1380,59 @@ def _card(r: dict, alert: dict | None = None) -> str:
     elif r.get("stale"):
         pill = "<span class='pill stale'>快照过期</span>"
     else:
+        fp_val = r.get("fiveh_pct")
         if rem is not None and rem <= 3:
             pill = "<span class='pill bad'>已用完</span>"
+        elif fp_val is not None and fp_val >= 100:
+            pill = "<span class='pill bad'>5h 已满</span>"
         else:
             pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
-    return f"""<div class="card{urgent}"><div class="top"><span class="name">{name}</span>
+    return f"""<div class="card{urgent}" data-provider="{pkey}"><div class="top"><div class="title-wrap"><span class="pbadge">{picon} {pbadge}</span><span class="name">{name}</span></div>
 {pill}</div>
+<div class="win-label">{win_tag_label}</div>
 <div class="stat-row"><div class="pct" style="color:{c}">{pct_txt}</div>
 <div class="remain">{rem_txt}</div></div>
 <div class="bar"><div class="fill" style="width:{min(100, max(0, pct or 0))}%;background:{c}"></div></div>
 <div class="meta main-meta">{meta_line}</div>
 {sub_bars}{fiveh}{note}</div>"""
+
+
+def _summary_strip_html(rows: list[dict], alerts: list[dict]) -> str:
+    if not rows:
+        return ""
+    total = len(rows)
+    alert_names = {a["name"] for a in alerts}
+    exhausted = 0
+    warn_count = 0
+    healthy = 0
+    rem_vals: list[float] = []
+    dual_count = 0
+    for r in rows:
+        if r.get("fiveh_text") and r.get("used_pct") is not None:
+            dual_count += 1
+        if r.get("status") != "ok":
+            exhausted += 1
+            continue
+        rem = _remain_pct(r)
+        if rem is not None:
+            rem_vals.append(rem)
+        fp = r.get("fiveh_pct")
+        if (rem is not None and rem <= 3) or (fp is not None and fp >= 100):
+            exhausted += 1
+        elif r.get("name") in alert_names or (rem is not None and rem <= 20) or r.get("stale"):
+            warn_count += 1
+        else:
+            healthy += 1
+    avg_rem = f"{sum(rem_vals) / len(rem_vals):.0f}%" if rem_vals else "—"
+    return (
+        '<div class="summary-strip" aria-label="额度概览统计">'
+        f'<div class="kpi"><span class="kpi-label">监控源总数</span><span class="kpi-val">{total}</span><span class="kpi-sub">含 {dual_count} 个 5h+周双窗模型</span></div>'
+        f'<div class="kpi ok"><span class="kpi-label">正常可用</span><span class="kpi-val">{healthy}</span><span class="kpi-sub">周窗与 5h 窗均充裕</span></div>'
+        f'<div class="kpi warn"><span class="kpi-label">快刷新 / 关注</span><span class="kpi-val">{warn_count}</span><span class="kpi-sub">临近重置或余量偏低</span></div>'
+        f'<div class="kpi bad"><span class="kpi-label">限流 / 已耗尽</span><span class="kpi-val">{exhausted}</span><span class="kpi-sub">周额度用尽或 5h 满载</span></div>'
+        f'<div class="kpi accent"><span class="kpi-label">平均周剩余</span><span class="kpi-val">{avg_rem}</span><span class="kpi-sub">按周剩余从低到高排序</span></div>'
+        '</div>'
+    )
 
 
 _finance_md = os.environ.get("QUOTA_FINANCE_MD", "").strip()
@@ -1506,6 +1692,8 @@ def _daily_deltas(days: int = 7, *, public: bool = False) -> list[tuple[str, lis
             except ValueError:
                 continue
             name = r[1].split("（")[0].strip()  # 合并标签改名（如 Kimi 本人 99/月→948/年）
+            if name == "Gemini · Cloud (Claude)":
+                name = "Gemini · Claude"
             if _quota_hidden(name) or name.casefold() in hidden_names:
                 continue
             reset = r[5] if len(r) > 5 else ""
@@ -1721,9 +1909,10 @@ def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
     alert_by_name = {a["name"]: a for a in alerts}
     cards = "".join(_card(r, alert_by_name.get(r["name"])) for r in rows)
     banner = _alerts_html(alerts)
+    summary_strip = _summary_strip_html(rows, alerts)
     live_ui = """
-<div style="margin:14px 0"><button id="rb" onclick="doRefresh()" style="background:#238636;color:#fff;border:0;border-radius:8px;padding:8px 18px;font-size:14px;cursor:pointer">🔄 重新查询</button>
-<span id="st" style="font-size:12px;color:#8b949e;margin-left:10px"></span></div>
+<div style="margin:14px 0"><button id="rb" onclick="doRefresh()" style="background:linear-gradient(180deg,#2ea043 0%,#238636 100%);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:8px 18px;font-size:13.5px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(35,134,54,.3)">🔄 立即刷新全部额度</button>
+<span id="st" style="font-size:12.5px;color:#8b949e;margin-left:10px"></span></div>
 <script>
 async function doRefresh(){
   const st=document.getElementById('st');st.textContent=' 查询中（约1分钟，期间可切走）…';
@@ -1742,7 +1931,7 @@ async function poll(){
         title = "AI 额度监控"
         detail = "卡片按周剩余从小到大"
         content = (
-            f'{live_ui}<div class="grid">{cards}</div>{banner}'
+            f'{live_ui}{summary_strip}{banner}<div class="grid">{cards}</div>'
             f'{_history_html(public, days=2, more_href="history.html")}'
         )
     elif page == "history":
@@ -1760,7 +1949,7 @@ async function poll(){
         title = "AI 额度监控"
         detail = "卡片按周剩余从小到大"
         content = (
-            f'{live_ui}<div class="grid">{cards}</div>{banner}'
+            f'{live_ui}{summary_strip}{banner}<div class="grid">{cards}</div>'
             f'{_history_html(public)}{_subs_html(public)}'
         )
 
@@ -1773,49 +1962,82 @@ async function poll(){
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
 *{{box-sizing:border-box}}
-body{{background:radial-gradient(ellipse 80% 50% at 50% -15%,rgba(56,139,253,.13),transparent),#0a0e14;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;padding:32px 28px 48px;max-width:1140px;margin:0 auto;line-height:1.45;-webkit-font-smoothing:antialiased}}
-h1{{font-size:24px;font-weight:700;letter-spacing:-.02em;margin:0 0 6px;color:#f0f6fc}}
-.ts{{color:#8b949e;font-size:13px;margin-bottom:20px;line-height:1.5}}
-h2{{font-size:17px;font-weight:600;letter-spacing:-.01em;color:#f0f6fc;margin:30px 0 12px}}
+body{{background:radial-gradient(ellipse 90% 55% at 50% -18%,rgba(56,139,253,.16),transparent 65%),radial-gradient(ellipse 60% 40% at 85% 10%,rgba(163,113,247,.08),transparent 60%),#090d13;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;padding:28px 28px 56px;max-width:1180px;margin:0 auto;line-height:1.45;-webkit-font-smoothing:antialiased}}
+.page-head{{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 20px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid rgba(240,246,252,.07)}}
+h1{{font-size:26px;font-weight:750;letter-spacing:-.025em;margin:0 0 6px;color:#f0f6fc;display:flex;align-items:center;gap:10px}}
+.ts{{color:#8b949e;font-size:13px;margin:0;line-height:1.5;display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
+.ts::before{{content:"";display:inline-block;width:7px;height:7px;border-radius:99px;background:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.75)}}
+h2{{font-size:17.5px;font-weight:650;letter-spacing:-.015em;color:#f0f6fc;margin:34px 0 14px}}
 a{{color:#58a6ff;text-decoration:none;transition:color .15s}} a:hover{{color:#79c0ff;text-decoration:underline}}
-.nav{{position:sticky;top:12px;z-index:20;display:flex;gap:6px;width:max-content;max-width:100%;padding:5px;margin:0 0 24px;background:rgba(22,27,34,.82);border:1px solid rgba(240,246,252,.1);border-radius:12px;backdrop-filter:blur(16px) saturate(180%);-webkit-backdrop-filter:blur(16px) saturate(180%);box-shadow:0 8px 24px rgba(0,0,0,.32)}}
-.nav a{{color:#8b949e;padding:7px 14px;border-radius:8px;font-size:13px;font-weight:600;white-space:nowrap;transition:all .18s ease}}
+.nav{{position:sticky;top:12px;z-index:20;display:flex;gap:6px;width:max-content;max-width:100%;padding:5px;margin:0 0 22px;background:rgba(17,22,29,.84);border:1px solid rgba(240,246,252,.11);border-radius:13px;backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);box-shadow:0 10px 28px rgba(0,0,0,.38)}}
+.nav a{{color:#8b949e;padding:7px 15px;border-radius:9px;font-size:13px;font-weight:600;white-space:nowrap;transition:all .18s ease}}
 .nav a:hover{{color:#f0f6fc;text-decoration:none;background:rgba(110,118,129,.16)}}
-.nav a.active{{color:#fff;background:linear-gradient(180deg,#2ea043 0%,#238636 100%);box-shadow:0 2px 6px rgba(35,134,54,.35),inset 0 1px 0 rgba(255,255,255,.15)}}
+.nav a.active{{color:#fff;background:linear-gradient(180deg,#2ea043 0%,#238636 100%);box-shadow:0 2px 8px rgba(35,134,54,.38),inset 0 1px 0 rgba(255,255,255,.18)}}
 .update-notice{{position:fixed;right:20px;bottom:20px;z-index:30;background:linear-gradient(135deg,#1f6feb,#388bfd);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:10px 14px;font-size:13px;font-weight:500;box-shadow:0 10px 30px rgba(0,0,0,.45)}}
 .update-notice button{{margin-left:10px;border:0;border-radius:7px;padding:5px 10px;background:#fff;color:#0969da;cursor:pointer;font-weight:600;transition:transform .15s}}
 .update-notice button:hover{{transform:scale(1.03)}}
 [hidden]{{display:none!important}}
+.summary-strip{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:0 0 20px}}
+.kpi{{background:linear-gradient(180deg,rgba(24,30,40,.9) 0%,rgba(16,20,28,.95) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:13px 16px;display:flex;flex-direction:column;gap:3px;box-shadow:0 4px 14px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.04)}}
+.kpi-label{{font-size:11.5px;font-weight:600;color:#8b949e;letter-spacing:.02em}}
+.kpi-val{{font-size:24px;font-weight:750;color:#f0f6fc;letter-spacing:-.03em;line-height:1.15;font-variant-numeric:tabular-nums}}
+.kpi-sub{{font-size:11px;color:#6e7681;margin-top:1px}}
+.kpi.ok .kpi-val{{color:#3fb950}}
+.kpi.warn .kpi-val{{color:#f0883e}}
+.kpi.bad .kpi-val{{color:#ff7b72}}
+.kpi.accent .kpi-val{{color:#58a6ff}}
 table{{border-collapse:separate;border-spacing:0;width:100%;background:rgba(22,27,34,.85);border:1px solid rgba(48,54,61,.85);border-radius:14px;overflow:hidden}}
 td{{border-bottom:1px solid rgba(48,54,61,.6);padding:10px 14px;font-size:14px}}
 tr:last-child td{{border-bottom:0}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;align-items:stretch}}
-.card{{display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(28,34,44,.92) 0%,rgba(19,24,32,.96) 100%);border:1px solid rgba(48,54,61,.85);border-radius:16px;padding:18px 20px;box-shadow:0 4px 18px rgba(0,0,0,.22),inset 0 1px 0 rgba(255,255,255,.04);transition:transform .2s cubic-bezier(.16,1,.3,1),border-color .2s ease,box-shadow .2s ease}}
-.top{{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}}
-.name{{font-size:15px;font-weight:600;color:#f0f6fc;letter-spacing:-.01em;line-height:1.3}}
-.pill{{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;letter-spacing:.02em;flex-shrink:0;border:1px solid transparent}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px;align-items:stretch}}
+.card{{position:relative;overflow:hidden;display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(26,32,43,.94) 0%,rgba(16,21,29,.98) 100%);border:1px solid rgba(56,63,73,.78);border-radius:16px;padding:18px 20px;box-shadow:0 6px 22px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.05);transition:transform .2s cubic-bezier(.16,1,.3,1),border-color .2s ease,box-shadow .2s ease}}
+.card::before{{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;background:linear-gradient(90deg,rgba(88,166,255,.65),rgba(88,166,255,.1));opacity:.85}}
+.card[data-provider="codex"]::before{{background:linear-gradient(90deg,#10b981,#34d399)}}
+.card[data-provider="claude"]::before{{background:linear-gradient(90deg,#f97316,#fb923c)}}
+.card[data-provider="gemini"]::before{{background:linear-gradient(90deg,#3b82f6,#60a5fa)}}
+.card[data-provider="argon"]::before{{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}}
+.card[data-provider="kimi"]::before{{background:linear-gradient(90deg,#06b6d4,#38bdf8)}}
+.card[data-provider="minimax"]::before{{background:linear-gradient(90deg,#ec4899,#f472b6)}}
+.top{{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}}
+.title-wrap{{display:flex;flex-direction:column;gap:4px;min-width:0}}
+.pbadge{{display:inline-flex;align-items:center;gap:4px;width:max-content;font-size:10.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.13);border:1px solid rgba(240,246,252,.07);padding:2px 7px;border-radius:6px;letter-spacing:.02em}}
+.card[data-provider="claude"] .pbadge{{color:#fdba74;background:rgba(249,115,22,.12);border-color:rgba(249,115,22,.24)}}
+.card[data-provider="gemini"] .pbadge{{color:#93c5fd;background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.24)}}
+.card[data-provider="argon"] .pbadge{{color:#c4b5fd;background:rgba(139,92,246,.12);border-color:rgba(139,92,246,.24)}}
+.card[data-provider="codex"] .pbadge{{color:#6ee7b7;background:rgba(16,185,129,.12);border-color:rgba(16,185,129,.24)}}
+.card[data-provider="kimi"] .pbadge{{color:#7dd3fc;background:rgba(6,182,212,.12);border-color:rgba(6,182,212,.24)}}
+.card[data-provider="minimax"] .pbadge{{color:#f9a8d4;background:rgba(236,72,153,.12);border-color:rgba(236,72,153,.24)}}
+.name{{font-size:15.5px;font-weight:650;color:#f0f6fc;letter-spacing:-.01em;line-height:1.3;word-break:break-word}}
+.win-label{{font-size:11px;font-weight:600;color:#8b949e;letter-spacing:.01em;margin-bottom:2px}}
+.pill{{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;letter-spacing:.02em;flex-shrink:0;border:1px solid transparent;margin-top:2px}}
 .pill.ok{{background:rgba(63,185,80,.12);color:#3fb950;border-color:rgba(63,185,80,.28)}}
 .pill.bad{{background:rgba(248,81,73,.14);color:#ff7b72;border-color:rgba(248,81,73,.32)}}
 .pill.stale{{background:rgba(139,148,158,.14);color:#8b949e;border-color:rgba(139,148,158,.28)}}
 .pill.warn{{background:rgba(240,136,62,.14);color:#f0883e;border-color:rgba(240,136,62,.32)}}
-.card.urgent{{border-color:rgba(240,136,62,.55);background:linear-gradient(180deg,rgba(240,136,62,.07) 0%,rgba(19,24,32,.96) 48%)}}
-.stat-row{{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:2px 0 10px}}
-.pct{{font-size:36px;font-weight:700;letter-spacing:-1.5px;line-height:1;font-variant-numeric:tabular-nums}}
-.remain{{font-size:12.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.12);border:1px solid rgba(240,246,252,.06);padding:3px 9px;border-radius:7px;font-variant-numeric:tabular-nums}}
-.alertband{{background:linear-gradient(135deg,rgba(240,136,62,.12) 0%,rgba(210,153,34,.04) 100%);border:1px solid rgba(240,136,62,.35);border-left:4px solid #f0883e;border-radius:14px;padding:14px 18px;margin:18px 0 22px;box-shadow:0 4px 16px rgba(0,0,0,.18)}}
-.alertband h3{{margin:0 0 8px;font-size:14.5px;font-weight:600;color:#f0883e}}
+.card.urgent{{border-color:rgba(240,136,62,.55);background:linear-gradient(180deg,rgba(240,136,62,.08) 0%,rgba(16,21,29,.98) 48%)}}
+.stat-row{{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:2px 0 9px}}
+.pct{{font-size:36px;font-weight:750;letter-spacing:-1.5px;line-height:1;font-variant-numeric:tabular-nums}}
+.remain{{font-size:12.5px;font-weight:600;color:#c9d1d9;background:rgba(110,118,129,.15);border:1px solid rgba(240,246,252,.08);padding:3px 9px;border-radius:7px;font-variant-numeric:tabular-nums}}
+.alertband{{background:linear-gradient(135deg,rgba(240,136,62,.13) 0%,rgba(210,153,34,.05) 100%);border:1px solid rgba(240,136,62,.38);border-left:4px solid #f0883e;border-radius:14px;padding:14px 18px;margin:0 0 20px;box-shadow:0 4px 16px rgba(0,0,0,.18)}}
+.alertband h3{{margin:0 0 8px;font-size:14.5px;font-weight:650;color:#f0883e}}
 .alertband ul{{margin:0;padding-left:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px 18px}}
 .alertband li{{font-size:13.5px;color:#e6edf3;margin:0}}
-.bar{{height:8px;background:rgba(110,118,129,.18);border-radius:99px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.35)}}
-.bar.small{{height:5px;margin-top:4px}}
+.bar{{height:8px;background:rgba(110,118,129,.2);border-radius:99px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.35)}}
+.bar.small{{height:6px;margin-top:6px}}
 .fill{{height:100%;border-radius:99px;transition:width .5s cubic-bezier(.22,1,.36,1)}}
 .meta{{font-size:12.5px;color:#c9d1d9;margin-top:8px;font-variant-numeric:tabular-nums}}
-.main-meta{{margin-bottom:4px}}
-.sub-box{{background:rgba(13,17,23,.52);border:1px solid rgba(48,54,61,.65);border-radius:10px;padding:9px 12px;margin-top:10px}}
-.sub-box .sub{{margin-top:0;margin-bottom:4px;font-size:11px;font-weight:600;color:#8b949e;letter-spacing:.02em}}
-.sub-box .meta{{margin-top:6px;font-size:12px;color:#8b949e}}
+.main-meta{{margin-bottom:4px;color:#9ca3af}}
+.sub-box{{background:rgba(11,15,21,.62);border:1px solid rgba(56,63,73,.68);border-radius:11px;padding:10px 12px;margin-top:11px}}
+.sub-box.exhausted{{background:linear-gradient(180deg,rgba(248,81,73,.09) 0%,rgba(11,15,21,.68) 100%);border-color:rgba(248,81,73,.38)}}
+.sub-box.single-win{{background:rgba(13,17,23,.36);border-style:dashed;border-color:rgba(48,54,61,.55)}}
+.sub-head{{display:flex;align-items:center;justify-content:space-between;gap:8px}}
+.sub-box .sub{{margin:0;font-size:11.5px;font-weight:600;color:#c9d1d9;letter-spacing:.01em}}
+.sub-stats{{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}}
+.sub-pct{{font-size:13px;font-weight:700}}
+.sub-rem,.sub-tag{{font-size:10.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.14);border:1px solid rgba(240,246,252,.06);padding:1px 6px;border-radius:5px}}
+.sub-box .meta{{margin-top:6px;font-size:11.5px;color:#8b949e}}
 .meta.nonai{{padding:6px 0;border-bottom:1px dashed #21262d}}
-.card:hover,.scard:hover{{transform:translateY(-2px);border-color:rgba(88,166,255,.55);box-shadow:0 10px 28px rgba(0,0,0,.36),0 0 0 1px rgba(88,166,255,.12)}}
+.card:hover,.scard:hover{{transform:translateY(-2px);border-color:rgba(88,166,255,.55);box-shadow:0 12px 30px rgba(0,0,0,.38),0 0 0 1px rgba(88,166,255,.12)}}
 .sgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}}
 .scard{{background:linear-gradient(180deg,rgba(28,34,44,.9) 0%,rgba(19,24,32,.95) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:15px 18px;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}}
 .scard.mini{{padding:11px 15px}}
@@ -1829,9 +2051,9 @@ tr:last-child td{{border-bottom:0}}
 .totalband{{background:linear-gradient(135deg,rgba(88,166,255,.12),rgba(88,166,255,.04));border:1px solid rgba(88,166,255,.32);border-radius:12px;padding:12px 18px;font-size:15px;font-weight:600;margin-bottom:16px}}
 table.ledger td{{font-size:14px;padding:9px 14px}}
 table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}}
-.meta.dim{{color:#6e7681;font-size:11.5px;margin-top:auto;padding-top:12px;border-top:1px solid rgba(48,54,61,.45)}}
+.meta.dim{{color:#6e7681;font-size:11.5px;margin-top:auto;padding-top:11px;border-top:1px solid rgba(48,54,61,.45)}}
 .card > .main-meta + .meta.dim{{margin-top:auto}}
-.card > .sub-box + .meta.dim{{margin-top:12px}}
+.card > .sub-box + .meta.dim{{margin-top:11px}}
 .sub{{font-size:11.5px;color:#8b949e;margin-top:12px;line-height:1.5}}
 .msg{{font-size:13px;color:#d29922;margin-top:6px}}
 .hday{{background:linear-gradient(180deg,rgba(28,34,44,.88) 0%,rgba(19,24,32,.94) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:14px 18px;margin-bottom:12px;box-shadow:0 2px 10px rgba(0,0,0,.16)}}
@@ -1842,7 +2064,7 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-varia
 .hbar{{flex:1;height:9px;background:rgba(110,118,129,.16);border-radius:99px;overflow:hidden}}
 .hfill{{height:100%;background:linear-gradient(90deg,#1f6feb 0%,#58a6ff 100%);border-radius:99px}}
 .hval{{width:76px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0;font-variant-numeric:tabular-nums}}
-.section-head{{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-top:30px}}
+.section-head{{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-top:34px}}
 .section-head h2{{margin:0 0 10px}}
 .more-link{{font-size:13px;font-weight:500;white-space:nowrap}}
 .history-tools{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 0 14px}}
@@ -1857,11 +2079,13 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-varia
 }}
 @media(min-width:601px) and (max-width:959px){{
   .grid{{grid-template-columns:repeat(2,1fr)}}
+  .summary-strip{{grid-template-columns:repeat(3,minmax(0,1fr))}}
 }}
 @media(max-width:600px){{
   body{{padding:18px 14px 32px}}
   .nav{{top:6px;width:100%;justify-content:space-between}}
   .nav a{{padding:7px 9px}}
+  .summary-strip{{grid-template-columns:repeat(2,minmax(0,1fr))}}
   .grid{{grid-template-columns:1fr}}
   .section-head{{align-items:flex-start}}
   .history-tools{{align-items:stretch;flex-direction:column}}
@@ -1872,8 +2096,8 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-varia
 }}
 </style></head><body>
 {navigation}
-<h1>{heading}</h1>
-<div class="ts">更新于 {now} · {"公开快照 · 每小时自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · {detail}</div>
+<header class="page-head"><div><h1>{heading}</h1>
+<div class="ts">更新于 {now} · {"公开快照 · 每小时自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · {detail}</div></div></header>
 <main id="quotaContent">{content}</main>
 {freshness}
 </body></html>"""

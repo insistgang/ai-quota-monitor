@@ -357,6 +357,44 @@ CLAUDE AND GPT MODELS
         self.assertEqual(rows[0]["status"], "ok")
         self.assertEqual(rows[0]["used_pct"], 68.8)
 
+    def test_enrich_antigravity_rows_promotes_flash_and_claude_to_dual_windows(self):
+        panel = """
+GEMINI MODELS
+  Models within this group: Gemini Flash, Gemini Pro
+
+  Weekly Limit Remaining
+    86.11%
+    Refreshes in 110h 47m
+
+  Five Hour Limit Remaining
+    77.00%
+    Refreshes in 3h 4m
+"""
+        sub_rows = [
+            {
+                "name": "Gemini · 3.8 Flash",
+                "status": "ok",
+                "used_pct": 23.0,
+                "used_text": "23%",
+                "reset": "11-10 00:42",
+                "window_kind": "5h",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "agy-groups.json"
+            with (
+                mock.patch.object(quota_report, "AGY_GROUPS_CACHE", cache_path),
+                mock.patch.object(quota_report, "_tmux_slash_probe", return_value=panel),
+            ):
+                enriched = quota_report._enrich_antigravity_rows(sub_rows)
+
+        self.assertEqual(enriched[0]["used_pct"], 13.9)
+        self.assertEqual(enriched[0]["used_text"], "13.9%")
+        self.assertEqual(enriched[0]["fiveh_pct"], 23.0)
+        self.assertEqual(enriched[0]["fiveh_text"], "23%")
+        self.assertEqual(enriched[0]["fiveh_reset"], "11-10 00:42")
+        self.assertEqual(enriched[0]["window_kind"], "dual")
+
 
 class CollectionRetryTests(unittest.TestCase):
     def test_retries_only_failed_or_cached_source_batches(self):

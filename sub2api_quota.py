@@ -137,6 +137,94 @@ def _windows(platform: str, data: dict) -> tuple[dict, object, bool]:
     return windows, stamp, incomplete
 
 
+def _antigravity_summary_windows(summary: object) -> dict[str, dict[str, tuple[float, object]]]:
+    if not isinstance(summary, dict):
+        return {}
+    out: dict[str, dict[str, tuple[float, object]]] = {}
+    for group in summary.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        gname = str(group.get("displayName") or "").lower()
+        for bucket in group.get("buckets") or []:
+            if not isinstance(bucket, dict):
+                continue
+            bid = str(bucket.get("bucketId") or "").lower()
+            win = str(bucket.get("window") or "").lower()
+            rem = bucket.get("remainingFraction")
+            if isinstance(rem, bool) or not isinstance(rem, (int, float)) or not math.isfinite(rem) or not 0 <= float(rem) <= 1:
+                continue
+            used = _percent((1.0 - float(rem)) * 100.0)
+            reset = bucket.get("resetTime")
+            if "claude" in gname or bid.startswith("3p-"):
+                label = "Claude"
+            elif "argon" in gname or "argon" in bid:
+                label = "Gemini 4 Argon"
+            elif "gemini" in gname:
+                label = "Gemini 3.8 Flash"
+            else:
+                continue
+            if win == "weekly" or "weekly" in bid:
+                out.setdefault(label, {})["week"] = (used, reset)
+            elif win == "5h" or "5h" in bid:
+                out.setdefault(label, {})["short"] = (used, reset)
+    return out
+
+
+def _build_antigravity_sub_quota(
+    label: str,
+    candidates: list[tuple[float, object]],
+    summary_group: dict[str, tuple[float, object]],
+    *,
+    dual_window: bool,
+    now: float,
+) -> dict | None:
+    best = max(candidates, key=lambda item: item[0]) if candidates else None
+    week = summary_group.get("week")
+    short = summary_group.get("short")
+    if not dual_window:
+        chosen = week or best
+        if not chosen:
+            return None
+        return {
+            "label": label,
+            "used_pct": chosen[0],
+            "used_text": f"{chosen[0]:g}%",
+            "reset": _when(_epoch(chosen[1])),
+            "window_kind": "weekly",
+        }
+
+    if week and (short or best):
+        short_win = short or best
+        return {
+            "label": label,
+            "used_pct": week[0],
+            "used_text": f"{week[0]:g}%",
+            "reset": _when(_epoch(week[1])),
+            "fiveh_pct": short_win[0],
+            "fiveh_text": f"{short_win[0]:g}%",
+            "fiveh_reset": _when(_epoch(short_win[1])),
+            "fiveh_label": "5h 窗",
+            "window_kind": "dual",
+        }
+
+    chosen = week or best or short
+    if not chosen:
+        return None
+    reset_epoch = _epoch(chosen[1])
+    is_short = (
+        week is None
+        and reset_epoch is not None
+        and 0 < reset_epoch - now <= 6 * 3600
+    )
+    return {
+        "label": label,
+        "used_pct": chosen[0],
+        "used_text": f"{chosen[0]:g}%",
+        "reset": _when(reset_epoch),
+        "window_kind": "5h" if is_short else "weekly",
+    }
+
+
 def normalize_account(account: dict, snapshot: dict, *, now: float | None = None) -> dict:
     """Only explicit provider windows can become percentages or history samples."""
     now = time.time() if now is None else now
@@ -178,6 +266,7 @@ def normalize_account(account: dict, snapshot: dict, *, now: float | None = None
                 row["fiveh_label"] = "Gemini 模型窗口"
         if account["platform"] == "antigravity":
             models = data.get("antigravity_quota") or {}
+            summary_windows = _antigravity_summary_windows(data.get("antigravity_quota_summary"))
             argon_candidates = [(_percent(w.get("utilization")), w.get("reset_time"))
                                 for n, w in models.items() if "gemini-4-argon" in n.lower()]
             flash_candidates = [(_percent(w.get("utilization")), w.get("reset_time"))
@@ -186,30 +275,20 @@ def normalize_account(account: dict, snapshot: dict, *, now: float | None = None
                                 for n, w in models.items() if n.lower().startswith("claude")]
 
             sub_quotas = []
-            if argon_candidates:
-                best_argon = max(argon_candidates, key=lambda item: item[0])
-                sub_quotas.append({
-                    "label": "Gemini 4 Argon",
-                    "used_pct": best_argon[0],
-                    "used_text": f"{best_argon[0]:g}%",
-                    "reset": _when(_epoch(best_argon[1])),
-                })
-            if flash_candidates:
-                best_flash = max(flash_candidates, key=lambda item: item[0])
-                sub_quotas.append({
-                    "label": "Gemini 3.8 Flash",
-                    "used_pct": best_flash[0],
-                    "used_text": f"{best_flash[0]:g}%",
-                    "reset": _when(_epoch(best_flash[1])),
-                })
-            if cloud_candidates:
-                best_cloud = max(cloud_candidates, key=lambda item: item[0])
-                sub_quotas.append({
-                    "label": "Cloud (Claude)",
-                    "used_pct": best_cloud[0],
-                    "used_text": f"{best_cloud[0]:g}%",
-                    "reset": _when(_epoch(best_cloud[1])),
-                })
+            for label, cands, dual in (
+                ("Gemini 4 Argon", argon_candidates, False),
+                ("Gemini 3.8 Flash", flash_candidates, True),
+                ("Claude", cloud_candidates, True),
+            ):
+                sq = _build_antigravity_sub_quota(
+                    label,
+                    cands,
+                    summary_windows.get(label, {}),
+                    dual_window=dual,
+                    now=now,
+                )
+                if sq is not None:
+                    sub_quotas.append(sq)
             if sub_quotas:
                 row["sub_quotas"] = sub_quotas
         notes = ["Sub2API", "数据 " + _when(captured)]
@@ -235,19 +314,20 @@ def normalize_account(account: dict, snapshot: dict, *, now: float | None = None
 
 
 def split_antigravity_rows(row: dict) -> list[dict]:
-    """将 Antigravity 单账号拆分为 3 栏独立卡片：Gemini 4 Argon、Gemini 3.8 Flash 与 Cloud (Claude)。"""
+    """将 Antigravity 单账号拆分为 3 栏独立卡片：Gemini 4 Argon、Gemini 3.8 Flash 与 Claude。"""
     if not row.get("sub_quotas"):
         return [row]
     sub_rows = []
     label_map = {
         "Gemini 4 Argon": "Gemini · 4 Argon",
         "Gemini 3.8 Flash": "Gemini · 3.8 Flash",
-        "Cloud (Claude)": "Gemini · Cloud (Claude)",
+        "Claude": "Gemini · Claude",
+        "Cloud (Claude)": "Gemini · Claude",
     }
     for sq in row["sub_quotas"]:
         label = sq["label"]
         name = label_map.get(label, f"Gemini · {label}")
-        sub_rows.append({
+        item = {
             "name": name,
             "status": row.get("status", "ok"),
             "source": row.get("source", "sub2api"),
@@ -258,7 +338,15 @@ def split_antigravity_rows(row: dict) -> list[dict]:
             "used_text": sq.get("used_text", "—"),
             "reset": sq.get("reset", "?"),
             "note": f"Sub2API · 数据 {_when(row.get('captured_at'))} · Google Antigravity",
-        })
+        }
+        if sq.get("fiveh_pct") is not None or sq.get("fiveh_text"):
+            item["fiveh_pct"] = sq.get("fiveh_pct")
+            item["fiveh_text"] = sq.get("fiveh_text", "—")
+            item["fiveh_reset"] = sq.get("fiveh_reset", "?")
+            item["fiveh_label"] = sq.get("fiveh_label", "5h 窗")
+        if sq.get("window_kind"):
+            item["window_kind"] = sq["window_kind"]
+        sub_rows.append(item)
     return sub_rows
 
 

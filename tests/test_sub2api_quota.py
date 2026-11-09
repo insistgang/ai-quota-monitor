@@ -143,10 +143,56 @@ class NormalizationTests(unittest.TestCase):
         labels = {sq["label"]: sq["used_pct"] for sq in row["sub_quotas"]}
         self.assertEqual(labels["Gemini 4 Argon"], 12)
         self.assertEqual(labels["Gemini 3.8 Flash"], 24)
-        self.assertEqual(labels["Cloud (Claude)"], 5)
+        self.assertEqual(labels["Claude"], 5)
         self.assertIn("Argon 12%", row["note"])
         self.assertIn("3.8 Flash 24%", row["note"])
-        self.assertIn("Cloud (Claude) 5%", row["note"])
+        self.assertIn("Claude 5%", row["note"])
+        split = quota.split_antigravity_rows(row)
+        self.assertEqual([r["name"] for r in split], [
+            "Gemini · 4 Argon",
+            "Gemini · 3.8 Flash",
+            "Gemini · Claude",
+        ])
+
+    def test_antigravity_summary_extracts_dual_weekly_and_fiveh_windows(self):
+        data = {
+            "updated_at": iso(NOW),
+            "antigravity_quota": {
+                "gemini-4-argon-high": {"utilization": 3, "reset_time": iso(NOW + 5 * 86400)},
+                "gemini-3.8-flash-high": {"utilization": 23, "reset_time": iso(NOW + 7200)},
+                "claude-sonnet-5-5-high": {"utilization": 100, "reset_time": iso(NOW + 10800)},
+            },
+            "antigravity_quota_summary": {
+                "groups": [
+                    {
+                        "displayName": "Gemini Models",
+                        "buckets": [
+                            {"bucketId": "gemini-weekly", "window": "weekly",
+                             "remainingFraction": 0.861, "resetTime": iso(NOW + 4 * 86400)},
+                            {"bucketId": "gemini-5h", "window": "5h",
+                             "remainingFraction": 0.77, "resetTime": iso(NOW + 7200)},
+                        ],
+                    },
+                    {
+                        "displayName": "Claude and GPT models",
+                        "buckets": [
+                            {"bucketId": "3p-weekly", "window": "weekly",
+                             "remainingFraction": 0.128, "resetTime": iso(NOW + 86400)},
+                            {"bucketId": "3p-5h", "window": "5h",
+                             "remainingFraction": 0.0, "resetTime": iso(NOW + 10800)},
+                        ],
+                    },
+                ],
+            },
+        }
+        row = quota.normalize_account(account("antigravity", 9), snapshot(data, "antigravity", 9), now=NOW)
+        split = {r["name"]: r for r in quota.split_antigravity_rows(row)}
+        self.assertEqual(split["Gemini · 4 Argon"]["used_pct"], 3)
+        self.assertNotIn("fiveh_pct", split["Gemini · 4 Argon"])
+        self.assertEqual(split["Gemini · 3.8 Flash"]["used_pct"], 13.9)
+        self.assertEqual(split["Gemini · 3.8 Flash"]["fiveh_pct"], 23.0)
+        self.assertEqual(split["Gemini · Claude"]["used_pct"], 87.2)
+        self.assertEqual(split["Gemini · Claude"]["fiveh_pct"], 100.0)
 
 
 class ConfigurationAndCollectionTests(unittest.TestCase):
