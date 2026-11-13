@@ -1437,6 +1437,48 @@ def _summary_strip_html(rows: list[dict], alerts: list[dict]) -> str:
 
 _finance_md = os.environ.get("QUOTA_FINANCE_MD", "").strip()
 FINANCE_MD = Path(_finance_md) if _finance_md else None
+FINANCE_CONFIG_PATH = Path(os.environ.get(
+    "QUOTA_FINANCE_CONFIG",
+    str(HOME / ".cache/ai-quota-monitor/finance.json"),
+))
+
+
+def _load_finance_config(path: Path | None = None) -> dict:
+    """读取本机私有财务配置（笔记路径与公开脱敏映射）；不存在时返回空配置。"""
+    config_path = path or FINANCE_CONFIG_PATH
+    if not config_path.exists():
+        return {}
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError
+        version = data.get("version", 1)
+        if type(version) is not int or version != 1:
+            raise ValueError
+        finance_md = data.get("finance_md")
+        if finance_md is not None and not isinstance(finance_md, str):
+            raise ValueError
+        replacements = data.get("public_replacements")
+        if replacements is not None:
+            if not isinstance(replacements, dict) or any(
+                not isinstance(k, str) or not k or not isinstance(v, str)
+                for k, v in replacements.items()
+            ):
+                raise ValueError
+        return data
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError("财务私有配置缺失或格式无效") from exc
+
+
+def _resolve_finance_md(config: dict | None = None) -> Path | None:
+    if FINANCE_MD is not None:
+        return FINANCE_MD
+    env_path = os.environ.get("QUOTA_FINANCE_MD", "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    cfg = _load_finance_config() if config is None else config
+    raw = cfg.get("finance_md", "") if isinstance(cfg, dict) else ""
+    return Path(raw.strip()).expanduser() if isinstance(raw, str) and raw.strip() else None
 
 
 def _strip_md(s: str) -> str:
@@ -1446,11 +1488,12 @@ def _strip_md(s: str) -> str:
 def _load_finance() -> dict:
     """解析订阅、私有预存余额、历史充值、非 AI 订阅与合计口径。"""
     out = {"subs": [], "prepaid": [], "ledger": [], "non_ai": [], "total_ai": "", "total_all": ""}
-    if FINANCE_MD is None:
+    finance_path = _resolve_finance_md()
+    if finance_path is None:
         return out
     try:
-        text = FINANCE_MD.read_text(encoding="utf-8")
-    except Exception:  # noqa: BLE001
+        text = finance_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
         return out
     section = ""
     prepaid_public_column = None
@@ -1502,7 +1545,7 @@ def _load_finance() -> dict:
 
 
 _SVC_ICONS = [
-    ("ChatGPT", "🤖"), ("Kimi", "🌙"), ("Gemini", "♊"),
+    ("ChatGPT", "🤖"), ("Kimi", "🌙"), ("Gemini", "♊"), ("Google", "♊"),
     ("MiniMax", "🎬"), ("智谱", "🧠"), ("ChatGLM", "🧠"), ("中转", "🔀"),
     ("DeepSeek", "🔍"), ("Claude", "🎭"), ("iCloud", "☁️"), ("得到", "🎧"),
     ("微信读书", "📚"), ("百度网盘", "💾"), ("视频", "📺"),
@@ -1556,6 +1599,7 @@ def _countdown_pill(expiry: str | None) -> str:
 
 def _subs_html(public: bool) -> str:
     fin = _load_finance()
+    cfg = _load_finance_config() if public else {}
     prepaid_accounts = fin.get("prepaid", [])
     if public:
         prepaid_accounts = [
@@ -1565,17 +1609,28 @@ def _subs_html(public: bool) -> str:
     if not fin["subs"] and not fin["ledger"] and not prepaid_accounts:
         return ""
 
+    replacements = sorted(
+        (cfg.get("public_replacements") or {}).items(),
+        key=lambda kv: len(kv[0]),
+        reverse=True,
+    )
+
     def pub(s: str) -> str:
-        return s.replace("朋友", "朋友") if public else s
+        if not public:
+            return s
+        out = s.replace("朋友", "朋友")
+        for src, dst in replacements:
+            out = out.replace(src, dst)
+        return out
 
     prepaid_html = ""
     if prepaid_accounts:
         prepaid_cards = "".join(
-            f'<div class="scard"><div class="sname">{_html_text(r["name"])}</div>'
-            f'<div class="scost">余额 {_html_text(r["balance"])}</div>'
-            f'<div class="smeta">截至 {_html_text(r["as_of"])} · 每次扣费 {_html_text(r["debit"])}</div>'
-            f'<div class="meta">可覆盖扣费：{_html_text(r["covered"])}</div>'
-            f'<div class="meta">需在 {_html_text(r["next_topup"])} 扣费前补款</div></div>'
+            f'<div class="scard"><div class="sname">{_html_text(pub(r["name"]))}</div>'
+            f'<div class="scost">余额 {_html_text(pub(r["balance"]))}</div>'
+            f'<div class="smeta">截至 {_html_text(pub(r["as_of"]))} · 每次扣费 {_html_text(pub(r["debit"]))}</div>'
+            f'<div class="meta">可覆盖扣费：{_html_text(pub(r["covered"]))}</div>'
+            f'<div class="meta">需在 {_html_text(pub(r["next_topup"]))} 扣费前补款</div></div>'
             for r in prepaid_accounts
         )
         prepaid_html = (
@@ -1598,7 +1653,7 @@ def _subs_html(public: bool) -> str:
 </div>""")
     ledger_trs = "".join(
         f"<tr><td>{_html_text(l['date'])}</td><td>{_svc_icon(l['item'])} {_html_text(pub(l['item']))}</td>"
-        f"<td class='amt'>{_html_text(l['amount'])}</td></tr>"
+        f"<td class='amt'>{_html_text(pub(l['amount']))}</td></tr>"
         for l in fin["ledger"])
     non_ai = "".join(
         f"<div class='scard mini'><div class='sname'>{_svc_icon(x)} {_html_text(pub(x))}</div></div>"
@@ -1607,9 +1662,9 @@ def _subs_html(public: bool) -> str:
     if fin["total_ai"] or fin["total_all"]:
         parts = []
         if fin["total_ai"]:
-            parts.append(f"本人 AI 固定支出约 {_html_text(fin['total_ai'])}")
+            parts.append(f"本人 AI 固定支出约 {_html_text(pub(fin['total_ai']))}")
         if fin["total_all"]:
-            parts.append(f"含非 AI 合计约 {_html_text(fin['total_all'])}")
+            parts.append(f"含非 AI 合计约 {_html_text(pub(fin['total_all']))}")
         totals = f"<div class='totalband'>💰 {' · '.join(parts)}</div>"
     return f"""<h2>💳 订阅 · 到期 · 续费</h2>
 {totals}
@@ -2109,6 +2164,7 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-varia
 def render_public_site(rows: list[dict], index_path: Path) -> None:
     """生成 GitHub Pages 的概览、每日消耗和订阅账单三个静态页面。"""
     _public_hidden_codex_names()
+    _load_finance_config()
     index_path.parent.mkdir(parents=True, exist_ok=True)
     pages = {
         "overview": index_path,

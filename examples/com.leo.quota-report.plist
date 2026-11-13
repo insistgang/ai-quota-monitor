@@ -42,6 +42,10 @@
     <string>/Users/YOURNAME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     <key>TERM</key>
     <string>xterm-256color</string>
+    <!-- 可选：财务盘点笔记路径，也可配置在 ~/.cache/ai-quota-monitor/finance.json
+    <key>QUOTA_FINANCE_MD</key>
+    <string>/Users/YOURNAME/Documents/path/to/finance.md</string>
+    -->
   </dict>
 
   <key>StandardOutPath</key>

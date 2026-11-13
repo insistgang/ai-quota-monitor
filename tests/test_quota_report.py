@@ -843,6 +843,87 @@ class PrepaidSubscriptionTests(unittest.TestCase):
         self.assertNotIn("800 TRY", public)
         self.assertNotIn("未授权额外内容", public)
 
+    def test_private_finance_config_resolves_path_and_masks_public_replacements(self):
+        text = (
+            self.FINANCE_TEXT
+            + "| 2026-11-04 | 好友甲（昵称甲）GPT 合拼分摊 | -240 元 |\n"
+            + "| 2026-11-05 | Google Pro | 80 元 |\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            finance_path = root / "finance.md"
+            finance_path.write_text(text, encoding="utf-8")
+            cfg_path = root / "finance.json"
+            cfg_path.write_text(json.dumps({
+                "version": 1,
+                "finance_md": str(finance_path),
+                "public_replacements": {
+                    "好友甲": "匿名甲",
+                    "好友甲（昵称甲）": "朋友 ",
+                },
+            }), encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", None), \
+                 mock.patch.object(quota_report, "FINANCE_CONFIG_PATH", cfg_path), \
+                 mock.patch.dict(quota_report.os.environ, {"QUOTA_FINANCE_MD": ""}):
+                public = quota_report._subs_html(public=True)
+                local = quota_report._subs_html(public=False)
+
+        self.assertIn("朋友 GPT 合拼分摊", public)
+        self.assertNotIn("好友甲", public)
+        self.assertNotIn("昵称甲", public)
+        self.assertNotIn("匿名甲", public)
+        self.assertIn("♊ Google Pro", public)
+        self.assertIn("好友甲（昵称甲）GPT 合拼分摊", local)
+
+    def test_env_finance_md_overrides_config_path_while_keeping_public_replacements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_md = root / "env.md"
+            cfg_md = root / "cfg.md"
+            env_md.write_text(
+                self.FINANCE_TEXT + "| 2026-11-04 | 好友甲充值 | 50 元 |\n",
+                encoding="utf-8",
+            )
+            cfg_md.write_text(self.FINANCE_TEXT, encoding="utf-8")
+            cfg_path = root / "finance.json"
+            cfg_path.write_text(json.dumps({
+                "version": 1,
+                "finance_md": str(cfg_md),
+                "public_replacements": {"好友甲": "朋友"},
+            }), encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", None), \
+                 mock.patch.object(quota_report, "FINANCE_CONFIG_PATH", cfg_path), \
+                 mock.patch.dict(quota_report.os.environ, {"QUOTA_FINANCE_MD": str(env_md)}):
+                public = quota_report._subs_html(public=True)
+
+        self.assertIn("朋友充值", public)
+        self.assertNotIn("好友甲", public)
+
+    def test_malformed_finance_config_blocks_public_site_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hidden_cfg = root / "public-hidden-accounts.json"
+            hidden_cfg.write_text(json.dumps({"codex_emails": ["a@example.com"]}), encoding="utf-8")
+            bad_fin_cfg = root / "finance.json"
+            bad_fin_cfg.write_text("{invalid-json", encoding="utf-8")
+            with mock.patch.object(quota_report, "PUBLIC_HIDDEN_ACCOUNTS_PATH", hidden_cfg), \
+                 mock.patch.object(quota_report, "FINANCE_CONFIG_PATH", bad_fin_cfg):
+                with self.assertRaisesRegex(RuntimeError, "财务私有配置"):
+                    quota_report.render_public_site([], root / "index.html")
+            self.assertFalse((root / "index.html").exists())
+            self.assertFalse((root / "subscriptions.html").exists())
+
+    def test_missing_finance_config_and_env_returns_empty_finance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_cfg = Path(tmp) / "missing-finance.json"
+            with mock.patch.object(quota_report, "FINANCE_MD", None), \
+                 mock.patch.object(quota_report, "FINANCE_CONFIG_PATH", missing_cfg), \
+                 mock.patch.dict(quota_report.os.environ, {"QUOTA_FINANCE_MD": ""}):
+                fin = quota_report._load_finance()
+                html = quota_report._subs_html(public=True)
+        self.assertEqual(fin, {"subs": [], "prepaid": [], "ledger": [], "non_ai": [], "total_ai": "", "total_all": ""})
+        self.assertEqual(html, "")
+
 
 class EmailPrivacyTests(unittest.TestCase):
     def test_static_live_and_public_pages_mask_cards_notes_errors_and_alerts(self):
