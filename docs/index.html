@@ -1,14 +1,14 @@
 <!doctype html><html lang="zh"><head><meta charset="utf-8">
-<title>AI 额度监控 · 2026-11-14 01:28</title><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="quota-generated-at" content="2026-11-14 01:28">
+<title>AI 额度监控 · 2026-11-14 01:54</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="quota-generated-at" content="2026-11-14 01:54">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
 *{box-sizing:border-box}
 body{background:radial-gradient(ellipse 90% 55% at 50% -18%,rgba(56,139,253,.16),transparent 65%),radial-gradient(ellipse 60% 40% at 85% 10%,rgba(163,113,247,.08),transparent 60%),#090d13;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;padding:28px 28px 56px;max-width:1180px;margin:0 auto;line-height:1.45;-webkit-font-smoothing:antialiased}
 .page-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 20px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid rgba(240,246,252,.07)}
 h1{font-size:26px;font-weight:750;letter-spacing:-.025em;margin:0 0 6px;color:#f0f6fc;display:flex;align-items:center;gap:10px}
-.ts{color:#8b949e;font-size:13px;margin:0;line-height:1.5;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.ts::before{content:"";display:inline-block;width:7px;height:7px;border-radius:99px;background:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.75)}
+.ts{position:relative;padding-left:15px;color:#8b949e;font-size:13px;margin:0;line-height:1.5}
+.ts::before{content:"";position:absolute;left:0;top:.48em;width:7px;height:7px;border-radius:99px;background:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.75)}
 h2{font-size:17.5px;font-weight:650;letter-spacing:-.015em;color:#f0f6fc;margin:34px 0 14px}
 a{color:#58a6ff;text-decoration:none;transition:color .15s} a:hover{color:#79c0ff;text-decoration:underline}
 .nav{position:sticky;top:12px;z-index:20;display:flex;gap:6px;width:max-content;max-width:100%;padding:5px;margin:0 0 22px;background:rgba(17,22,29,.84);border:1px solid rgba(240,246,252,.11);border-radius:13px;backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);box-shadow:0 10px 28px rgba(0,0,0,.38)}
@@ -20,10 +20,11 @@ a{color:#58a6ff;text-decoration:none;transition:color .15s} a:hover{color:#79c0f
 .update-notice button:hover{transform:scale(1.03)}
 [hidden]{display:none!important}
 .summary-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:0 0 20px}
+.summary-strip.subs-kpi{grid-template-columns:repeat(4,minmax(0,1fr))}
 .kpi{background:linear-gradient(180deg,rgba(24,30,40,.9) 0%,rgba(16,20,28,.95) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:13px 16px;display:flex;flex-direction:column;gap:3px;box-shadow:0 4px 14px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.04)}
 .kpi-label{font-size:11.5px;font-weight:600;color:#8b949e;letter-spacing:.02em}
-.kpi-val{font-size:24px;font-weight:750;color:#f0f6fc;letter-spacing:-.03em;line-height:1.15;font-variant-numeric:tabular-nums}
-.kpi-sub{font-size:11px;color:#6e7681;margin-top:1px}
+.kpi-val{font-size:24px;font-weight:750;color:#f0f6fc;letter-spacing:-.03em;line-height:1.15;font-variant-numeric:tabular-nums;word-break:break-word}
+.kpi-sub{font-size:11px;color:#6e7681;margin-top:1px;line-height:1.35}
 .kpi.ok .kpi-val{color:#3fb950}
 .kpi.warn .kpi-val{color:#f0883e}
 .kpi.bad .kpi-val{color:#ff7b72}
@@ -32,23 +33,30 @@ table{border-collapse:separate;border-spacing:0;width:100%;background:rgba(22,27
 td{border-bottom:1px solid rgba(48,54,61,.6);padding:10px 14px;font-size:14px}
 tr:last-child td{border-bottom:0}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px;align-items:stretch}
-.card{position:relative;overflow:hidden;display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(26,32,43,.94) 0%,rgba(16,21,29,.98) 100%);border:1px solid rgba(56,63,73,.78);border-radius:16px;padding:18px 20px;box-shadow:0 6px 22px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.05);transition:transform .2s cubic-bezier(.16,1,.3,1),border-color .2s ease,box-shadow .2s ease}
-.card::before{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;background:linear-gradient(90deg,rgba(88,166,255,.65),rgba(88,166,255,.1));opacity:.85}
-.card[data-provider="codex"]::before{background:linear-gradient(90deg,#10b981,#34d399)}
-.card[data-provider="claude"]::before{background:linear-gradient(90deg,#f97316,#fb923c)}
-.card[data-provider="gemini"]::before{background:linear-gradient(90deg,#3b82f6,#60a5fa)}
-.card[data-provider="argon"]::before{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}
-.card[data-provider="kimi"]::before{background:linear-gradient(90deg,#06b6d4,#38bdf8)}
-.card[data-provider="minimax"]::before{background:linear-gradient(90deg,#ec4899,#f472b6)}
+.prepaid-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}
+.card,.scard{position:relative;overflow:hidden;display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(26,32,43,.94) 0%,rgba(16,21,29,.98) 100%);border:1px solid rgba(56,63,73,.78);border-radius:16px;padding:18px 20px;box-shadow:0 6px 22px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.05);transition:transform .2s cubic-bezier(.16,1,.3,1),border-color .2s ease,box-shadow .2s ease}
+.card::before,.scard::before{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;background:linear-gradient(90deg,rgba(88,166,255,.65),rgba(88,166,255,.1));opacity:.85}
+.card[data-provider="codex"]::before,.scard[data-provider="codex"]::before{background:linear-gradient(90deg,#10b981,#34d399)}
+.card[data-provider="claude"]::before,.scard[data-provider="claude"]::before{background:linear-gradient(90deg,#f97316,#fb923c)}
+.card[data-provider="gemini"]::before,.scard[data-provider="gemini"]::before{background:linear-gradient(90deg,#3b82f6,#60a5fa)}
+.card[data-provider="argon"]::before,.scard[data-provider="argon"]::before{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}
+.card[data-provider="kimi"]::before,.scard[data-provider="kimi"]::before{background:linear-gradient(90deg,#06b6d4,#38bdf8)}
+.card[data-provider="minimax"]::before,.scard[data-provider="minimax"]::before{background:linear-gradient(90deg,#ec4899,#f472b6)}
+.scard[data-provider="zhipu"]::before{background:linear-gradient(90deg,#6366f1,#818cf8)}
+.scard[data-provider="proxy"]::before{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.scard[data-provider="deepseek"]::before{background:linear-gradient(90deg,#0ea5e9,#38bdf8)}
 .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}
 .title-wrap{display:flex;flex-direction:column;gap:4px;min-width:0}
 .pbadge{display:inline-flex;align-items:center;gap:4px;width:max-content;font-size:10.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.13);border:1px solid rgba(240,246,252,.07);padding:2px 7px;border-radius:6px;letter-spacing:.02em}
-.card[data-provider="claude"] .pbadge{color:#fdba74;background:rgba(249,115,22,.12);border-color:rgba(249,115,22,.24)}
-.card[data-provider="gemini"] .pbadge{color:#93c5fd;background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.24)}
-.card[data-provider="argon"] .pbadge{color:#c4b5fd;background:rgba(139,92,246,.12);border-color:rgba(139,92,246,.24)}
-.card[data-provider="codex"] .pbadge{color:#6ee7b7;background:rgba(16,185,129,.12);border-color:rgba(16,185,129,.24)}
-.card[data-provider="kimi"] .pbadge{color:#7dd3fc;background:rgba(6,182,212,.12);border-color:rgba(6,182,212,.24)}
-.card[data-provider="minimax"] .pbadge{color:#f9a8d4;background:rgba(236,72,153,.12);border-color:rgba(236,72,153,.24)}
+[data-provider="claude"] .pbadge{color:#fdba74;background:rgba(249,115,22,.12);border-color:rgba(249,115,22,.24)}
+[data-provider="gemini"] .pbadge{color:#93c5fd;background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.24)}
+[data-provider="argon"] .pbadge{color:#c4b5fd;background:rgba(139,92,246,.12);border-color:rgba(139,92,246,.24)}
+[data-provider="codex"] .pbadge{color:#6ee7b7;background:rgba(16,185,129,.12);border-color:rgba(16,185,129,.24)}
+[data-provider="kimi"] .pbadge{color:#7dd3fc;background:rgba(6,182,212,.12);border-color:rgba(6,182,212,.24)}
+[data-provider="minimax"] .pbadge{color:#f9a8d4;background:rgba(236,72,153,.12);border-color:rgba(236,72,153,.24)}
+[data-provider="zhipu"] .pbadge{color:#a5b4fc;background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.24)}
+[data-provider="proxy"] .pbadge{color:#fcd34d;background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.24)}
+[data-provider="deepseek"] .pbadge{color:#7dd3fc;background:rgba(14,165,233,.12);border-color:rgba(14,165,233,.24)}
 .name{font-size:15.5px;font-weight:650;color:#f0f6fc;letter-spacing:-.01em;line-height:1.3;word-break:break-word}
 .win-label{font-size:11px;font-weight:600;color:#8b949e;letter-spacing:.01em;margin-bottom:2px}
 .pill{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;letter-spacing:.02em;flex-shrink:0;border:1px solid transparent;margin-top:2px}
@@ -57,6 +65,7 @@ tr:last-child td{border-bottom:0}
 .pill.stale{background:rgba(139,148,158,.14);color:#8b949e;border-color:rgba(139,148,158,.28)}
 .pill.warn{background:rgba(240,136,62,.14);color:#f0883e;border-color:rgba(240,136,62,.32)}
 .card.urgent{border-color:rgba(240,136,62,.55);background:linear-gradient(180deg,rgba(240,136,62,.08) 0%,rgba(16,21,29,.98) 48%)}
+.scard.urgent{border-color:rgba(248,81,73,.42);background:linear-gradient(180deg,rgba(248,81,73,.07) 0%,rgba(16,21,29,.98) 48%)}
 .stat-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:2px 0 9px}
 .pct{font-size:36px;font-weight:750;letter-spacing:-1.5px;line-height:1;font-variant-numeric:tabular-nums}
 .remain{font-size:12.5px;font-weight:600;color:#c9d1d9;background:rgba(110,118,129,.15);border:1px solid rgba(240,246,252,.08);padding:3px 9px;border-radius:7px;font-variant-numeric:tabular-nums}
@@ -78,21 +87,37 @@ tr:last-child td{border-bottom:0}
 .sub-pct{font-size:13px;font-weight:700}
 .sub-rem,.sub-tag{font-size:10.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.14);border:1px solid rgba(240,246,252,.06);padding:1px 6px;border-radius:5px}
 .sub-box .meta{margin-top:6px;font-size:11.5px;color:#8b949e}
-.meta.nonai{padding:6px 0;border-bottom:1px dashed #21262d}
 .card:hover,.scard:hover{transform:translateY(-2px);border-color:rgba(88,166,255,.55);box-shadow:0 12px 30px rgba(0,0,0,.38),0 0 0 1px rgba(88,166,255,.12)}
-.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
-.scard{background:linear-gradient(180deg,rgba(28,34,44,.9) 0%,rgba(19,24,32,.95) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:15px 18px;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}
-.scard.mini{padding:11px 15px}
-.sname{font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:6px}
-.scost{font-size:19px;font-weight:700;color:#58a6ff;margin-bottom:6px;font-variant-numeric:tabular-nums}
-.smeta{font-size:12.5px;color:#8b949e}
-.cd{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;margin-left:6px;white-space:nowrap}
-.cd.green{background:rgba(63,185,80,.14);color:#3fb950}
-.cd.yellow{background:rgba(210,153,34,.14);color:#d29922}
-.cd.red{background:rgba(248,81,73,.14);color:#ff7b72}
-.totalband{background:linear-gradient(135deg,rgba(88,166,255,.12),rgba(88,166,255,.04));border:1px solid rgba(88,166,255,.32);border-radius:12px;padding:12px 18px;font-size:15px;font-weight:600;margin-bottom:16px}
-table.ledger td{font-size:14px;padding:9px 14px}
-table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sname{font-size:15px;font-weight:650;color:#f0f6fc;letter-spacing:-.01em;line-height:1.35;word-break:break-word}
+.scost-main{font-size:23px;font-weight:750;color:#58a6ff;letter-spacing:-.02em;line-height:1.25;margin:2px 0 12px;font-variant-numeric:tabular-nums}
+.scost-main.compact{font-size:17.5px;line-height:1.35}
+.scost-main.compact.long{font-size:15.5px;line-height:1.4}
+.scost-main.free{color:#3fb950}
+.scost-note{font-size:12px;color:#8b949e;line-height:1.5;background:rgba(11,15,21,.52);border:1px solid rgba(48,54,61,.6);border-radius:10px;padding:8px 11px;margin:0 0 12px}
+.prepaid-card .scost-main{margin-bottom:4px}
+.prepaid-card .sub-box{margin:12px 0}
+.prepaid-card .sub-box .meta{margin-top:0;font-size:12.5px;color:#c9d1d9}
+.smeta{font-size:12.5px;color:#8b949e;font-variant-numeric:tabular-nums}
+.cd{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;margin-left:6px;white-space:nowrap;border:1px solid transparent;flex-shrink:0}
+.top .cd{margin-left:0;margin-top:2px}
+.cd.green{background:rgba(63,185,80,.12);color:#3fb950;border-color:rgba(63,185,80,.28)}
+.cd.yellow{background:rgba(210,153,34,.14);color:#d29922;border-color:rgba(210,153,34,.3)}
+.cd.red{background:rgba(248,81,73,.14);color:#ff7b72;border-color:rgba(248,81,73,.32)}
+.cd.neutral{background:rgba(110,118,129,.15);color:#9ca3af;border-color:rgba(240,246,252,.08)}
+.table-wrap{overflow-x:auto;border:1px solid rgba(56,63,73,.78);border-radius:16px;background:linear-gradient(180deg,rgba(24,30,40,.9) 0%,rgba(15,20,27,.96) 100%);box-shadow:0 6px 22px rgba(0,0,0,.24)}
+table.ledger{border:0;border-radius:0;background:transparent}
+table.ledger thead th{background:rgba(11,15,21,.65);color:#8b949e;font-size:11.5px;font-weight:650;letter-spacing:.03em;padding:11px 16px;text-align:left;border-bottom:1px solid rgba(56,63,73,.72);white-space:nowrap}
+table.ledger thead th.amt{text-align:right}
+table.ledger tbody tr{transition:background .15s ease}
+table.ledger tbody tr:hover{background:rgba(56,139,253,.06)}
+table.ledger td{font-size:13.5px;padding:11px 16px;border-bottom:1px solid rgba(48,54,61,.5)}
+table.ledger td.ldate{color:#8b949e;white-space:nowrap;width:118px;font-variant-numeric:tabular-nums}
+table.ledger td.litem{color:#e6edf3;font-weight:500}
+table.ledger td.amt{text-align:right;color:#f0883e;font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums}
+table.ledger td.amt.credit{color:#3fb950}
+table.ledger td.amt.zero{color:#8b949e}
+.nonai-card .top{margin-bottom:6px}
+.nonai-desc{font-size:12.5px;color:#9ca3af;line-height:1.55}
 .meta.dim{color:#6e7681;font-size:11.5px;margin-top:auto;padding-top:11px;border-top:1px solid rgba(48,54,61,.45)}
 .card > .main-meta + .meta.dim{margin-top:auto}
 .card > .sub-box + .meta.dim{margin-top:11px}
@@ -106,8 +131,9 @@ table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap;font-varian
 .hbar{flex:1;height:9px;background:rgba(110,118,129,.16);border-radius:99px;overflow:hidden}
 .hfill{height:100%;background:linear-gradient(90deg,#1f6feb 0%,#58a6ff 100%);border-radius:99px}
 .hval{width:76px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0;font-variant-numeric:tabular-nums}
-.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-top:34px}
-.section-head h2{margin:0 0 10px}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:30px 0 12px}
+.section-head h2{margin:0}
+.section-count{font-size:11.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.13);border:1px solid rgba(240,246,252,.07);padding:3px 10px;border-radius:99px;white-space:nowrap}
 .more-link{font-size:13px;font-weight:500;white-space:nowrap}
 .history-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 0 14px}
 .range-switch{display:flex;gap:6px}
@@ -117,19 +143,24 @@ table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap;font-varian
 .range-switch button.active{background:#1f6feb;border-color:#1f6feb;color:#fff;box-shadow:0 2px 8px rgba(31,111,235,.35)}
 .source-filter{display:flex;align-items:center;gap:8px;color:#8b949e;font-size:12.5px}
 @media(min-width:960px){
-  .grid{grid-template-columns:repeat(3,1fr)}
+  .grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 @media(min-width:601px) and (max-width:959px){
-  .grid{grid-template-columns:repeat(2,1fr)}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .summary-strip{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .summary-strip.subs-kpi{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:600px){
   body{padding:18px 14px 32px}
   .nav{top:6px;width:100%;justify-content:space-between}
-  .nav a{padding:7px 9px}
-  .summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .grid{grid-template-columns:1fr}
-  .section-head{align-items:flex-start}
+  .nav a{padding:7px 9px;font-size:12.5px}
+  .card,.scard,.kpi,.title-wrap{min-width:0}
+  .summary-strip,.summary-strip.subs-kpi{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .grid,.prepaid-grid{grid-template-columns:minmax(0,1fr)}
+  .section-head{align-items:center}
+  table.ledger thead th,table.ledger td{padding:9px 11px;font-size:12.5px}
+  table.ledger td.ldate{width:86px;font-size:12px}
+  table.ledger td.amt{white-space:normal;max-width:128px;line-height:1.35}
   .history-tools{align-items:stretch;flex-direction:column}
   .source-filter select{flex:1}
   .hrow{gap:7px}
@@ -139,8 +170,8 @@ table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap;font-varian
 </style></head><body>
 <nav class="nav" aria-label="页面导航"><a href="index.html" class="active" aria-current="page">额度概览</a><a href="history.html">每日消耗</a><a href="subscriptions.html">订阅账单</a></nav>
 <header class="page-head"><div><h1>🤖 AI 额度监控</h1>
-<div class="ts">更新于 2026-11-14 01:28 · 公开快照 · 每小时自动更新 · 卡片按周剩余从小到大</div></div></header>
-<main id="quotaContent"><div class="summary-strip" aria-label="额度概览统计"><div class="kpi"><span class="kpi-label">监控源总数</span><span class="kpi-val">9</span><span class="kpi-sub">含 6 个 5h+周双窗模型</span></div><div class="kpi ok"><span class="kpi-label">正常可用</span><span class="kpi-val">4</span><span class="kpi-sub">周窗与 5h 窗均充裕</span></div><div class="kpi warn"><span class="kpi-label">快刷新 / 关注</span><span class="kpi-val">3</span><span class="kpi-sub">临近重置或余量偏低</span></div><div class="kpi bad"><span class="kpi-label">限流 / 已耗尽</span><span class="kpi-val">2</span><span class="kpi-sub">周额度用尽或 5h 满载</span></div><div class="kpi accent"><span class="kpi-label">平均周剩余</span><span class="kpi-val">49%</span><span class="kpi-sub">按周剩余从低到高排序</span></div></div><div class="alertband"><h3>快刷新了，剩余额度抓紧用</h3><ul><li><b>Codex · i***@163.com</b> · 5h 窗 1 小时后刷新，还剩 77%，抓紧用</li><li><b>Gemini · 3.8 Flash</b> · 周额度 11 小时后刷新，还剩 22%，抓紧用</li><li><b>Codex · p***@hotmail.com</b> · 周额度 明天 09:53刷新，还剩 40%，抓紧用</li></ul></div><div class="grid"><div class="card" data-provider="codex"><div class="top"><div class="title-wrap"><span class="pbadge">⚡ OpenAI · Codex</span><span class="name">Codex · q***@163.com</span></div>
+<div class="ts">更新于 2026-11-14 01:54 · 公开快照 · 每小时自动更新 · 卡片按周剩余从小到大</div></div></header>
+<main id="quotaContent"><div class="summary-strip" aria-label="额度概览统计"><div class="kpi"><span class="kpi-label">监控源总数</span><span class="kpi-val">9</span><span class="kpi-sub">含 6 个 5h+周双窗模型</span></div><div class="kpi ok"><span class="kpi-label">正常可用</span><span class="kpi-val">4</span><span class="kpi-sub">周窗与 5h 窗均充裕</span></div><div class="kpi warn"><span class="kpi-label">快刷新 / 关注</span><span class="kpi-val">3</span><span class="kpi-sub">临近重置或余量偏低</span></div><div class="kpi bad"><span class="kpi-label">限流 / 已耗尽</span><span class="kpi-val">2</span><span class="kpi-sub">周额度用尽或 5h 满载</span></div><div class="kpi accent"><span class="kpi-label">平均周剩余</span><span class="kpi-val">48%</span><span class="kpi-sub">按周剩余从低到高排序</span></div></div><div class="alertband"><h3>快刷新了，剩余额度抓紧用</h3><ul><li><b>Codex · i***@163.com</b> · 5h 窗 36 分钟后刷新，还剩 77%，抓紧用</li><li><b>Gemini · 3.8 Flash</b> · 周额度 11 小时后刷新，还剩 16%，抓紧用</li><li><b>Codex · p***@hotmail.com</b> · 周额度 明天 09:53刷新，还剩 40%，抓紧用</li></ul></div><div class="grid"><div class="card" data-provider="codex"><div class="top"><div class="title-wrap"><span class="pbadge">⚡ OpenAI · Codex</span><span class="name">Codex · q***@163.com</span></div>
 <span class='pill bad'>已用完</span></div>
 <div class="win-label">📅 本周额度（周窗口）</div>
 <div class="stat-row"><div class="pct" style="color:#f85149">100%</div>
@@ -149,46 +180,46 @@ table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap;font-varian
 <div class="meta main-meta">本周已用 100% · 重置 11-14 02:21</div>
 <div class="sub-box"><div class="sub-head"><span class="sub">⚡ 5h 窗（5h 限流窗）</span><span class="sub-stats"><span class='sub-pct' style='color:#3fb950'>0%</span><span class='sub-rem'>剩 100%</span></span></div>
 <div class="bar small"><div class="fill" style="width:0%;background:#3fb950"></div></div>
-<div class="meta">已用 0% · 重置 11-14 06:28</div></div><div class='meta dim'>Sub2API · plus · 数据 11-14 01:28</div></div><div class="card" data-provider="argon"><div class="top"><div class="title-wrap"><span class="pbadge">♊ Google · Argon</span><span class="name">Gemini · 4 Argon</span></div>
+<div class="meta">已用 0% · 重置 11-14 06:53</div></div><div class='meta dim'>Sub2API · plus · 数据 11-14 01:53</div></div><div class="card" data-provider="argon"><div class="top"><div class="title-wrap"><span class="pbadge">♊ Google · Argon</span><span class="name">Gemini · 4 Argon</span></div>
 <span class='pill bad'>已用完</span></div>
 <div class="win-label">📅 本周额度（周窗口）</div>
 <div class="stat-row"><div class="pct" style="color:#f85149">100%</div>
 <div class="remain">剩 0%</div></div>
 <div class="bar"><div class="fill" style="width:100%;background:#f85149"></div></div>
 <div class="meta main-meta">本周已用 100% · 重置 11-16 16:02</div>
-<div class="sub-box single-win"><div class="sub-head"><span class="sub">♾️ 独立周配额池</span><span class="sub-tag">仅周窗口</span></div><div class="meta">直接按 7 天周额度扣减，无 5 小时短时窗口限制</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:28 · Google Antigravity</div></div><div class="card urgent" data-provider="gemini"><div class="top"><div class="title-wrap"><span class="pbadge">✨ Google · Gemini</span><span class="name">Gemini · 3.8 Flash</span></div>
+<div class="sub-box single-win"><div class="sub-head"><span class="sub">♾️ 独立周配额池</span><span class="sub-tag">仅周窗口</span></div><div class="meta">直接按 7 天周额度扣减，无 5 小时短时窗口限制</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:53 · Google Antigravity</div></div><div class="card urgent" data-provider="gemini"><div class="top"><div class="title-wrap"><span class="pbadge">✨ Google · Gemini</span><span class="name">Gemini · 3.8 Flash</span></div>
 <span class='pill warn'>抓紧用</span></div>
 <div class="win-label">📅 本周额度（周窗口）</div>
-<div class="stat-row"><div class="pct" style="color:#d29922">77.9%</div>
-<div class="remain">剩 22.1%</div></div>
-<div class="bar"><div class="fill" style="width:77.9%;background:#d29922"></div></div>
-<div class="meta main-meta">本周已用 77.9% · 重置 11-14 12:25</div>
-<div class="sub-box"><div class="sub-head"><span class="sub">⚡ 5h 窗（5h 限流窗）</span><span class="sub-stats"><span class='sub-pct' style='color:#d29922'>62%</span><span class='sub-rem'>剩 38%</span></span></div>
-<div class="bar small"><div class="fill" style="width:62.0%;background:#d29922"></div></div>
-<div class="meta">已用 62% · 重置 11-14 04:08</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:28 · Google Antigravity</div></div><div class="card urgent" data-provider="codex"><div class="top"><div class="title-wrap"><span class="pbadge">⚡ OpenAI · Codex</span><span class="name">Codex · p***@hotmail.com</span></div>
+<div class="stat-row"><div class="pct" style="color:#f0883e">84%</div>
+<div class="remain">剩 16%</div></div>
+<div class="bar"><div class="fill" style="width:84.0%;background:#f0883e"></div></div>
+<div class="meta main-meta">本周已用 84% · 重置 11-14 12:25</div>
+<div class="sub-box"><div class="sub-head"><span class="sub">⚡ 5h 窗（5h 限流窗）</span><span class="sub-stats"><span class='sub-pct' style='color:#d29922'>71%</span><span class='sub-rem'>剩 29%</span></span></div>
+<div class="bar small"><div class="fill" style="width:71.0%;background:#d29922"></div></div>
+<div class="meta">已用 71% · 重置 11-14 04:08</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:53 · Google Antigravity</div></div><div class="card urgent" data-provider="codex"><div class="top"><div class="title-wrap"><span class="pbadge">⚡ OpenAI · Codex</span><span class="name">Codex · p***@hotmail.com</span></div>
 <span class='pill warn'>抓紧用</span></div>
 <div class="win-label">📅 本周额度（周窗口）</div>
 <div class="stat-row"><div class="pct" style="color:#d29922">60%</div>
 <div class="remain">剩 40%</div></div>
 <div class="bar"><div class="fill" style="width:60.0%;background:#d29922"></div></div>
 <div class="meta main-meta">本周已用 60% · 重置 11-15 09:53</div>
-<div class="sub-box single-win"><div class="sub-head"><span class="sub">♾️ 独立周配额池</span><span class="sub-tag">仅周窗口</span></div><div class="meta">直接按 7 天周额度扣减，无 5 小时短时窗口限制</div></div><div class='meta dim'>Sub2API · prolite · 数据 11-14 01:28</div></div><div class="card" data-provider="kimi"><div class="top"><div class="title-wrap"><span class="pbadge">🌙 Moonshot · Kimi</span><span class="name">Kimi · 主账号</span></div>
+<div class="sub-box single-win"><div class="sub-head"><span class="sub">♾️ 独立周配额池</span><span class="sub-tag">仅周窗口</span></div><div class="meta">直接按 7 天周额度扣减，无 5 小时短时窗口限制</div></div><div class='meta dim'>Sub2API · prolite · 数据 11-14 01:53</div></div><div class="card" data-provider="kimi"><div class="top"><div class="title-wrap"><span class="pbadge">🌙 Moonshot · Kimi</span><span class="name">Kimi · 主账号</span></div>
 <span class='pill ok'>正常</span></div>
 <div class="win-label">📅 本周额度（周窗口）</div>
-<div class="stat-row"><div class="pct" style="color:#3fb950">37%</div>
-<div class="remain">剩 63%</div></div>
-<div class="bar"><div class="fill" style="width:37.0%;background:#3fb950"></div></div>
-<div class="meta main-meta">本周已用 37% · 重置 11-16 01:18</div>
-<div class="sub-box"><div class="sub-head"><span class="sub">⚡ 5h 窗（5h 限流窗）</span><span class="sub-stats"><span class='sub-pct' style='color:#3fb950'>0%</span><span class='sub-rem'>剩 100%</span></span></div>
-<div class="bar small"><div class="fill" style="width:0%;background:#3fb950"></div></div>
-<div class="meta">已用 0% · 重置 11-14 06:18</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:28</div></div><div class="card" data-provider="minimax"><div class="top"><div class="title-wrap"><span class="pbadge">🎬 MiniMax · Coding</span><span class="name">MiniMax</span></div>
+<div class="stat-row"><div class="pct" style="color:#3fb950">42%</div>
+<div class="remain">剩 58%</div></div>
+<div class="bar"><div class="fill" style="width:42.0%;background:#3fb950"></div></div>
+<div class="meta main-meta">本周已用 42% · 重置 11-16 01:18</div>
+<div class="sub-box"><div class="sub-head"><span class="sub">⚡ 5h 窗（5h 限流窗）</span><span class="sub-stats"><span class='sub-pct' style='color:#3fb950'>22%</span><span class='sub-rem'>剩 78%</span></span></div>
+<div class="bar small"><div class="fill" style="width:22.0%;background:#3fb950"></div></div>
+<div class="meta">已用 22% · 重置 11-14 06:18</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:53</div></div><div class="card" data-provider="minimax"><div class="top"><div class="title-wrap"><span class="pbadge">🎬 MiniMax · Coding</span><span class="name">MiniMax</span></div>
 <span class='pill ok'>正常</span></div>
 <div class="win-label">⏱️ 5h 窗周期配额</div>
 <div class="stat-row"><div class="pct" style="color:#3fb950">31%</div>
 <div class="remain">剩 69%</div></div>
 <div class="bar"><div class="fill" style="width:31.0%;background:#3fb950"></div></div>
 <div class="meta main-meta">5h 窗已用 31% · 重置 11-14 05:00</div>
-<div class="sub-box single-win"><div class="sub-head"><span class="sub">♾️ 周期配额模式</span><span class="sub-tag">滚动短窗</span></div><div class="meta">按 5 小时滚动窗口独立计量，不设额外周总额度上限</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:28 · 无周额度</div></div><div class="card urgent" data-provider="codex"><div class="top"><div class="title-wrap"><span class="pbadge">⚡ OpenAI · Codex</span><span class="name">Codex · i***@163.com</span></div>
+<div class="sub-box single-win"><div class="sub-head"><span class="sub">♾️ 周期配额模式</span><span class="sub-tag">滚动短窗</span></div><div class="meta">按 5 小时滚动窗口独立计量，不设额外周总额度上限</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:53 · 无周额度</div></div><div class="card urgent" data-provider="codex"><div class="top"><div class="title-wrap"><span class="pbadge">⚡ OpenAI · Codex</span><span class="name">Codex · i***@163.com</span></div>
 <span class='pill warn'>抓紧用</span></div>
 <div class="win-label">📅 本周额度（周窗口）</div>
 <div class="stat-row"><div class="pct" style="color:#3fb950">25%</div>
@@ -197,7 +228,7 @@ table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap;font-varian
 <div class="meta main-meta">本周已用 25% · 重置 11-20 10:30</div>
 <div class="sub-box"><div class="sub-head"><span class="sub">⚡ 5h 窗（5h 限流窗）</span><span class="sub-stats"><span class='sub-pct' style='color:#3fb950'>23%</span><span class='sub-rem'>剩 77%</span></span></div>
 <div class="bar small"><div class="fill" style="width:23.0%;background:#3fb950"></div></div>
-<div class="meta">已用 23% · 重置 11-14 02:31</div></div><div class='meta dim'>Sub2API · plus · 数据 11-14 01:28</div></div><div class="card" data-provider="kimi"><div class="top"><div class="title-wrap"><span class="pbadge">🌙 Moonshot · Kimi</span><span class="name">Kimi · 副账号</span></div>
+<div class="meta">已用 23% · 重置 11-14 02:31</div></div><div class='meta dim'>Sub2API · plus · 数据 11-14 01:53</div></div><div class="card" data-provider="kimi"><div class="top"><div class="title-wrap"><span class="pbadge">🌙 Moonshot · Kimi</span><span class="name">Kimi · 副账号</span></div>
 <span class='pill ok'>正常</span></div>
 <div class="win-label">📅 本周额度（周窗口）</div>
 <div class="stat-row"><div class="pct" style="color:#3fb950">25%</div>
@@ -206,7 +237,7 @@ table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap;font-varian
 <div class="meta main-meta">本周已用 25% · 重置 11-16 15:17</div>
 <div class="sub-box"><div class="sub-head"><span class="sub">⚡ 5h 窗（5h 限流窗）</span><span class="sub-stats"><span class='sub-pct' style='color:#3fb950'>0%</span><span class='sub-rem'>剩 100%</span></span></div>
 <div class="bar small"><div class="fill" style="width:0%;background:#3fb950"></div></div>
-<div class="meta">已用 0% · 重置 11-14 04:17</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:28</div></div><div class="card" data-provider="claude"><div class="top"><div class="title-wrap"><span class="pbadge">🎭 Anthropic · Claude</span><span class="name">Gemini · Claude</span></div>
+<div class="meta">已用 0% · 重置 11-14 04:17</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:53</div></div><div class="card" data-provider="claude"><div class="top"><div class="title-wrap"><span class="pbadge">🎭 Anthropic · Claude</span><span class="name">Gemini · Claude</span></div>
 <span class='pill ok'>正常</span></div>
 <div class="win-label">📅 本周额度（周窗口）</div>
 <div class="stat-row"><div class="pct" style="color:#3fb950">1.5%</div>
@@ -215,8 +246,8 @@ table.ledger td.amt{color:#d29922;font-weight:600;white-space:nowrap;font-varian
 <div class="meta main-meta">本周已用 1.5% · 重置 11-17 10:49</div>
 <div class="sub-box"><div class="sub-head"><span class="sub">⚡ 5h 窗（5h 限流窗）</span><span class="sub-stats"><span class='sub-pct' style='color:#3fb950'>0%</span><span class='sub-rem'>剩 100%</span></span></div>
 <div class="bar small"><div class="fill" style="width:0%;background:#3fb950"></div></div>
-<div class="meta">已用 0% · 重置 11-14 06:28</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:28 · Google Antigravity</div></div></div><div class="section-head"><h2>📊 每日消耗（周计数口径）</h2><a class="more-link" href="history.html">查看 30 天完整记录 →</a></div><div class="hday" data-day-index="0"><div class="hdate">11-14</div><div class="hrow" data-source="Gemini · 3.8 Flash"><span class="hname">Gemini · 3.8 Flash</span><div class="hbar"><div class="hfill" style="width:100%"></div></div><span class="hval">+9.8%</span></div><div class="hrow" data-source="Kimi · 主账号"><span class="hname">Kimi · 主账号</span><div class="hbar"><div class="hfill" style="width:61%"></div></div><span class="hval">+6%</span></div><div class="hrow" data-source="Codex · i***@163.com"><span class="hname">Codex · i***@163.com</span><div class="hbar"><div class="hfill" style="width:31%"></div></div><span class="hval">+3%</span></div></div><div class="hday" data-day-index="1"><div class="hdate">11-13</div><div class="hrow" data-source="Gemini · 3.8 Flash"><span class="hname">Gemini · 3.8 Flash</span><div class="hbar"><div class="hfill" style="width:100%"></div></div><span class="hval">+33%</span></div><div class="hrow" data-source="Kimi · 主账号"><span class="hname">Kimi · 主账号</span><div class="hbar"><div class="hfill" style="width:76%"></div></div><span class="hval">+25%</span></div><div class="hrow" data-source="Codex · i***@163.com"><span class="hname">Codex · i***@163.com</span><div class="hbar"><div class="hfill" style="width:67%"></div></div><span class="hval">+22% ↺</span></div><div class="hrow" data-source="Codex · p***@hotmail.com"><span class="hname">Codex · p***@hotmail.com</span><div class="hbar"><div class="hfill" style="width:30%"></div></div><span class="hval">+10%</span></div><div class="hrow" data-source="Codex · q***@163.com"><span class="hname">Codex · q***@163.com</span><div class="hbar"><div class="hfill" style="width:3%"></div></div><span class="hval">+1%</span></div><div class="hrow" data-source="Kimi · 副账号"><span class="hname">Kimi · 副账号</span><div class="hbar"><div class="hfill" style="width:3%"></div></div><span class="hval">+1%</span></div></div><div class="sub">普通日 = 当天末次快照 − 前一日末次快照；↺ 跨周重置日按重置前后分段相加；* 底账首日或快照中断后从当天首次快照起算；短时窗口（5h / 当前时段）不计；底账随快照积累逐日丰富</div></main>
-<div id="updateNotice" class="update-notice" data-current="2026-11-14 01:28" hidden>
+<div class="meta">已用 0% · 重置 11-14 06:53</div></div><div class='meta dim'>Sub2API · 数据 11-14 01:53 · Google Antigravity</div></div></div><div class="section-head"><h2>📊 每日消耗（周计数口径）</h2><a class="more-link" href="history.html">查看 30 天完整记录 →</a></div><div class="hday" data-day-index="0"><div class="hdate">11-14</div><div class="hrow" data-source="Gemini · 3.8 Flash"><span class="hname">Gemini · 3.8 Flash</span><div class="hbar"><div class="hfill" style="width:100%"></div></div><span class="hval">+15.9%</span></div><div class="hrow" data-source="Kimi · 主账号"><span class="hname">Kimi · 主账号</span><div class="hbar"><div class="hfill" style="width:69%"></div></div><span class="hval">+11%</span></div><div class="hrow" data-source="Codex · i***@163.com"><span class="hname">Codex · i***@163.com</span><div class="hbar"><div class="hfill" style="width:19%"></div></div><span class="hval">+3%</span></div></div><div class="hday" data-day-index="1"><div class="hdate">11-13</div><div class="hrow" data-source="Gemini · 3.8 Flash"><span class="hname">Gemini · 3.8 Flash</span><div class="hbar"><div class="hfill" style="width:100%"></div></div><span class="hval">+33%</span></div><div class="hrow" data-source="Kimi · 主账号"><span class="hname">Kimi · 主账号</span><div class="hbar"><div class="hfill" style="width:76%"></div></div><span class="hval">+25%</span></div><div class="hrow" data-source="Codex · i***@163.com"><span class="hname">Codex · i***@163.com</span><div class="hbar"><div class="hfill" style="width:67%"></div></div><span class="hval">+22% ↺</span></div><div class="hrow" data-source="Codex · p***@hotmail.com"><span class="hname">Codex · p***@hotmail.com</span><div class="hbar"><div class="hfill" style="width:30%"></div></div><span class="hval">+10%</span></div><div class="hrow" data-source="Codex · q***@163.com"><span class="hname">Codex · q***@163.com</span><div class="hbar"><div class="hfill" style="width:3%"></div></div><span class="hval">+1%</span></div><div class="hrow" data-source="Kimi · 副账号"><span class="hname">Kimi · 副账号</span><div class="hbar"><div class="hfill" style="width:3%"></div></div><span class="hval">+1%</span></div></div><div class="sub">普通日 = 当天末次快照 − 前一日末次快照；↺ 跨周重置日按重置前后分段相加；* 底账首日或快照中断后从当天首次快照起算；短时窗口（5h / 当前时段）不计；底账随快照积累逐日丰富</div></main>
+<div id="updateNotice" class="update-notice" data-current="2026-11-14 01:54" hidden>
 发现有新数据 <button type="button" id="reloadLatest">点击更新</button></div>
 <script>
 (()=>{
