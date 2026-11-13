@@ -1545,11 +1545,26 @@ def _load_finance() -> dict:
 
 
 _SVC_ICONS = [
-    ("ChatGPT", "🤖"), ("Kimi", "🌙"), ("Gemini", "♊"), ("Google", "♊"),
-    ("MiniMax", "🎬"), ("智谱", "🧠"), ("ChatGLM", "🧠"), ("中转", "🔀"),
-    ("DeepSeek", "🔍"), ("Claude", "🎭"), ("iCloud", "☁️"), ("得到", "🎧"),
-    ("微信读书", "📚"), ("百度网盘", "💾"), ("视频", "📺"),
+    ("ChatGPT", "🤖"), ("Codex", "⚡"), ("GPT", "⚡"), ("Kimi", "🌙"),
+    ("Gemini", "♊"), ("Google", "♊"), ("MiniMax", "🎬"), ("智谱", "🧠"),
+    ("ChatGLM", "🧠"), ("中转", "🔀"), ("DeepSeek", "🔍"), ("Claude", "🎭"),
+    ("iCloud", "☁️"), ("得到", "🎧"), ("微信读书", "📚"), ("百度网盘", "💾"),
+    ("视频", "📺"),
 ]
+
+_SUB_PROVIDERS = (
+    ("chatgpt", "codex", "⚡ OpenAI · ChatGPT"),
+    ("codex", "codex", "⚡ OpenAI · Codex"),
+    ("kimi", "kimi", "🌙 Moonshot · Kimi"),
+    ("gemini", "gemini", "♊ Google · Gemini"),
+    ("google", "gemini", "♊ Google"),
+    ("minimax", "minimax", "🎬 MiniMax"),
+    ("智谱", "zhipu", "🧠 智谱 AI"),
+    ("chatglm", "zhipu", "🧠 智谱 AI"),
+    ("中转", "proxy", "🔀 第三方中转"),
+    ("deepseek", "deepseek", "🔍 DeepSeek"),
+    ("claude", "claude", "🎭 Anthropic · Claude"),
+)
 
 
 def _svc_icon(name: str) -> str:
@@ -1559,18 +1574,46 @@ def _svc_icon(name: str) -> str:
     return "📦"
 
 
+def _sub_provider_meta(name: str) -> tuple[str, str]:
+    lowered = name.lower()
+    for needle, key, badge in _SUB_PROVIDERS:
+        if needle in lowered:
+            return key, badge
+    return "", "📦 订阅服务"
+
+
+def _split_cost_headline(cost: str) -> tuple[str, str]:
+    """把长括号说明或补充说明拆离主价格，避免大字号金额区折行过长。"""
+    text = cost.strip()
+    m = re.fullmatch(r"([^（(]+?)\s*[（(](.+)[）)]", text)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    if (len(text) > 16 or "不计入" in text) and "，" in text:
+        head, rest = text.split("，", 1)
+        return head.strip(), rest.strip()
+    return text, ""
+
+
 def _short_renewal(s: str) -> str:
-    """把冗长的刷新/到期描述收成一行：每月 X/Y 日 + 到期日。"""
+    """把冗长的刷新/到期描述收成一行：每月 X/Y 日 + 到期或下次扣费日。"""
     days = re.findall(r"每月\s*(\d+)\s*日", s)
     expiry = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:到期|续费)", s)
+    next_debit = re.search(r"下次扣费\s*(\d{4}-\d{2}-\d{2})", s)
     parts = []
     if days:
         parts.append("每月 " + "/".join(days) + " 日")
     if expiry:
         parts.append(expiry.group(1) + " 到期")
+    elif next_debit:
+        parts.append("下次扣费 " + next_debit.group(1))
     if parts:
         return "；".join(parts)
-    return s if len(s) <= 16 else s[:15] + "…"
+    return s if len(s) <= 20 else s[:19] + "…"
+
+
+def _extract_expiry_date(text: str) -> str | None:
+    m = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:到期|续费)|下次扣费\s*(\d{4}-\d{2}-\d{2})", text)
+    return (m.group(1) or m.group(2)) if m else None
 
 
 def _days_left(expiry: str) -> int | None:
@@ -1595,6 +1638,174 @@ def _countdown_pill(expiry: str | None) -> str:
     else:
         cls = "green"
     return f"<span class='cd {cls}'>剩 {d} 天</span>"
+
+
+def _sub_status_pill(expiry: str | None, cost: str, renewal: str) -> str:
+    pill = _countdown_pill(expiry)
+    if pill:
+        return pill
+    combined = f"{cost} {renewal}"
+    if any(word in combined for word in ("按量", "余额", "耗尽")):
+        return "<span class='cd neutral'>按量余额</span>"
+    if "每月" in renewal:
+        return "<span class='cd neutral'>周期自动续</span>"
+    return ""
+
+
+def _subs_kpi_strip_html(
+    fin: dict,
+    visible_subs: list[dict],
+    prepaid_accounts: list[dict],
+    pub,
+) -> str:
+    expiring: list[tuple[int, str]] = []
+    for sub in visible_subs:
+        expiry = _extract_expiry_date(pub(sub["renewal"]))
+        if not expiry:
+            continue
+        days = _days_left(expiry)
+        if days is not None and 0 <= days < 30:
+            expiring.append((days, pub(sub["name"]).split("（", 1)[0].strip()))
+    expiring.sort()
+
+    ai_val = _html_text(pub(fin["total_ai"])) if fin.get("total_ai") else "—"
+    all_val = _html_text(pub(fin["total_all"])) if fin.get("total_all") else "—"
+    exp_cls = "warn" if expiring else "ok"
+    exp_sub = (
+        f"最近：{_html_text(expiring[0][1])}（剩 {expiring[0][0]} 天）"
+        if expiring else "未来 30 天无临近到期"
+    )
+    ledger = fin.get("ledger", [])
+    latest_date = next(
+        (str(item.get("date", "")).strip() for item in reversed(ledger) if item.get("date")),
+        "",
+    )
+    if prepaid_accounts and latest_date:
+        ledger_sub = f"预存计划 {len(prepaid_accounts)} 账号 · 最新 {latest_date}"
+    elif latest_date:
+        ledger_sub = f"最新记录 {latest_date}"
+    else:
+        ledger_sub = "暂无充值台账"
+
+    return (
+        '<div class="summary-strip subs-kpi" aria-label="订阅账单汇总">'
+        f'<div class="kpi accent"><span class="kpi-label">AI 固定月均</span><span class="kpi-val">{ai_val}</span>'
+        f'<span class="kpi-sub">在用列表 {len(visible_subs)} 项（含共享/按量）</span></div>'
+        f'<div class="kpi"><span class="kpi-label">含非 AI 合计</span><span class="kpi-val">{all_val}</span>'
+        f'<span class="kpi-sub">非 AI 固定订阅 {len(fin.get("non_ai", []))} 项</span></div>'
+        f'<div class="kpi {exp_cls}"><span class="kpi-label">30 天内到期 / 扣费</span>'
+        f'<span class="kpi-val">{len(expiring)}</span><span class="kpi-sub">{exp_sub}</span></div>'
+        f'<div class="kpi"><span class="kpi-label">历史消费台账</span><span class="kpi-val">{len(ledger)} 笔</span>'
+        f'<span class="kpi-sub">{_html_text(ledger_sub)}</span></div>'
+        '</div>'
+    )
+
+
+def _sub_card_html(sub: dict, pub) -> str:
+    name, cost, renewal = pub(sub["name"]), pub(sub["cost"]), pub(sub["renewal"])
+    provider_key, badge = _sub_provider_meta(name)
+    provider_attr = f' data-provider="{provider_key}"' if provider_key else ""
+    expiry = _extract_expiry_date(renewal)
+    days = _days_left(expiry) if expiry else None
+    urgent_cls = " urgent" if days is not None and days < 30 else ""
+    pill = _sub_status_pill(expiry, cost, renewal)
+
+    headline, note = _split_cost_headline(cost)
+    cost_cls = "scost-main"
+    if headline in {"0", "0 元"}:
+        cost_cls += " free"
+    elif "不计入" in cost or "免费" in headline:
+        cost_cls += " compact free"
+    elif len(headline) > 22:
+        cost_cls += " compact long"
+    elif len(headline) > 13:
+        cost_cls += " compact"
+    note_html = f'<div class="scost-note">{_html_text(note)}</div>' if note else ""
+
+    return (
+        f'<div class="scard sub-card{urgent_cls}"{provider_attr}>'
+        f'<div class="top"><div class="title-wrap"><span class="pbadge">{_html_text(badge)}</span>'
+        f'<div class="sname">{_html_text(name)}</div></div>{pill}</div>'
+        f'<div class="{cost_cls}">{_html_text(headline)}</div>'
+        f'{note_html}'
+        f'<div class="meta dim">📅 {_html_text(_short_renewal(renewal))}</div>'
+        '</div>'
+    )
+
+
+def _prepaid_cards_html(prepaid_accounts: list[dict], pub) -> str:
+    if not prepaid_accounts:
+        return ""
+    cards = []
+    for account in prepaid_accounts:
+        next_topup = pub(account["next_topup"])
+        pill = _countdown_pill(next_topup if re.fullmatch(r"\d{4}-\d{2}-\d{2}", next_topup) else None)
+        cards.append(
+            '<div class="scard prepaid-card" data-provider="codex">'
+            f'<div class="top"><div class="title-wrap"><span class="pbadge">⚡ OpenAI · 土区预存池</span>'
+            f'<div class="sname">{_html_text(pub(account["name"]))}</div></div>{pill}</div>'
+            f'<div class="scost-main">余额 {_html_text(pub(account["balance"]))}</div>'
+            f'<div class="smeta">截至 {_html_text(pub(account["as_of"]))} · 每次扣费 {_html_text(pub(account["debit"]))}</div>'
+            f'<div class="sub-box"><div class="meta">可覆盖扣费：{_html_text(pub(account["covered"]))}</div></div>'
+            f'<div class="meta dim">⏳ 需在 {_html_text(next_topup)} 扣费前补款</div>'
+            '</div>'
+        )
+    return (
+        '<div class="section-head"><h2>💰 ChatGPT 预存余额与扣费计划</h2>'
+        f'<span class="section-count">{len(prepaid_accounts)} 个账号</span></div>'
+        f'<div class="prepaid-grid">{"".join(cards)}</div>'
+        '<div class="sub">TRY 为土耳其里拉。余额为所示日期的人工记录；扣费计划按每次金额不变估算，未来扣款尚未记为支出。</div>'
+    )
+
+
+def _ledger_table_html(ledger: list[dict], pub) -> str:
+    rows_html = []
+    for item in reversed(ledger):
+        amount = pub(item["amount"])
+        raw_amt = amount.strip()
+        if raw_amt.startswith("-") or "回款" in raw_amt or "冲抵" in raw_amt:
+            amt_cls = "amt credit"
+        elif raw_amt in {"0", "0 元"}:
+            amt_cls = "amt zero"
+        else:
+            amt_cls = "amt"
+        rows_html.append(
+            f"<tr><td class='ldate'>{_html_text(item['date'])}</td>"
+            f"<td class='litem'>{_svc_icon(item['item'])} {_html_text(pub(item['item']))}</td>"
+            f"<td class='{amt_cls}'>{_html_text(amount)}</td></tr>"
+        )
+    return (
+        '<div class="section-head"><h2>📒 消费台账（历史充值）</h2>'
+        f'<span class="section-count">共 {len(ledger)} 笔 · 按时间倒序</span></div>'
+        '<div class="table-wrap"><table class="ledger">'
+        '<thead><tr><th>日期</th><th>项目</th><th class="amt">金额</th></tr></thead>'
+        f'<tbody>{"".join(rows_html)}</tbody></table></div>'
+    )
+
+
+def _nonai_cards_html(non_ai: list[str], pub) -> str:
+    cards = []
+    for raw in non_ai:
+        text = pub(raw)
+        title, desc = text.split("：", 1) if "：" in text else (text, "")
+        expiry = _extract_expiry_date(desc)
+        if "不续" in desc or "已到期" in desc:
+            pill = "<span class='cd neutral'>已停续</span>"
+        elif desc.startswith("0 元") or "白嫖" in desc:
+            pill = "<span class='cd green'>0 元</span>"
+        else:
+            pill = _countdown_pill(expiry)
+        desc_html = f'<div class="nonai-desc">{_html_text(desc)}</div>' if desc else ""
+        cards.append(
+            f'<article class="scard nonai-card" aria-label="{_html_text(text)}">'
+            f'<div class="top"><div class="sname">{_svc_icon(title)} {_html_text(title)}</div>{pill}</div>'
+            f'{desc_html}</article>'
+        )
+    return (
+        '<div class="section-head"><h2>🧾 非 AI 固定订阅</h2>'
+        f'<span class="section-count">共 {len(non_ai)} 项</span></div>'
+        f'<div class="grid nonai-grid">{"".join(cards)}</div>'
+    )
 
 
 def _subs_html(public: bool) -> str:
@@ -1623,57 +1834,22 @@ def _subs_html(public: bool) -> str:
             out = out.replace(src, dst)
         return out
 
-    prepaid_html = ""
-    if prepaid_accounts:
-        prepaid_cards = "".join(
-            f'<div class="scard"><div class="sname">{_html_text(pub(r["name"]))}</div>'
-            f'<div class="scost">余额 {_html_text(pub(r["balance"]))}</div>'
-            f'<div class="smeta">截至 {_html_text(pub(r["as_of"]))} · 每次扣费 {_html_text(pub(r["debit"]))}</div>'
-            f'<div class="meta">可覆盖扣费：{_html_text(pub(r["covered"]))}</div>'
-            f'<div class="meta">需在 {_html_text(pub(r["next_topup"]))} 扣费前补款</div></div>'
-            for r in prepaid_accounts
-        )
-        prepaid_html = (
-            '<h2>💰 ChatGPT 预存余额与扣费计划</h2>'
-            f'<div class="sgrid">{prepaid_cards}</div>'
-            '<div class="sub">TRY 为土耳其里拉。余额为所示日期的人工记录；扣费计划按每次金额不变估算，未来扣款尚未记为支出。</div>'
-        )
+    visible_subs = [r for r in fin["subs"] if not _quota_hidden(r["name"])]
+    kpi_strip = _subs_kpi_strip_html(fin, visible_subs, prepaid_accounts, pub)
+    sub_cards = "".join(_sub_card_html(r, pub) for r in visible_subs)
+    prepaid_html = _prepaid_cards_html(prepaid_accounts, pub)
+    ledger_html = _ledger_table_html(fin["ledger"], pub)
+    nonai_html = _nonai_cards_html(fin["non_ai"], pub)
 
-    cards = []
-    for r in fin["subs"]:
-        if _quota_hidden(r["name"]):
-            continue
-        name, cost, renewal = pub(r["name"]), pub(r["cost"]), pub(r["renewal"])
-        expiry_m = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:到期|续费)", renewal)
-        expiry = expiry_m.group(1) if expiry_m else None
-        cards.append(f"""<div class="scard">
-<div class="sname">{_svc_icon(name)} {_html_text(name)}</div>
-<div class="scost">{_html_text(cost)}</div>
-<div class="smeta">{_html_text(_short_renewal(renewal))} {_countdown_pill(expiry)}</div>
-</div>""")
-    ledger_trs = "".join(
-        f"<tr><td>{_html_text(l['date'])}</td><td>{_svc_icon(l['item'])} {_html_text(pub(l['item']))}</td>"
-        f"<td class='amt'>{_html_text(pub(l['amount']))}</td></tr>"
-        for l in fin["ledger"])
-    non_ai = "".join(
-        f"<div class='scard mini'><div class='sname'>{_svc_icon(x)} {_html_text(pub(x))}</div></div>"
-        for x in fin["non_ai"])
-    totals = ""
-    if fin["total_ai"] or fin["total_all"]:
-        parts = []
-        if fin["total_ai"]:
-            parts.append(f"本人 AI 固定支出约 {_html_text(pub(fin['total_ai']))}")
-        if fin["total_all"]:
-            parts.append(f"含非 AI 合计约 {_html_text(pub(fin['total_all']))}")
-        totals = f"<div class='totalband'>💰 {' · '.join(parts)}</div>"
-    return f"""<h2>💳 订阅 · 到期 · 续费</h2>
-{totals}
-<div class="sgrid">{''.join(cards)}</div>
-{prepaid_html}
-<h2>📒 消费台账（历史充值）</h2>
-<table class="ledger"><tr><td>日期</td><td>项目</td><td>金额</td></tr>{ledger_trs}</table>
-<h2>🧾 非 AI 固定订阅</h2>
-<div class="sgrid">{non_ai}</div>"""
+    return (
+        f'{kpi_strip}'
+        '<div class="section-head"><h2>💳 订阅 · 到期 · 续费</h2>'
+        f'<span class="section-count">共 {len(visible_subs)} 项</span></div>'
+        f'<div class="grid">{sub_cards}</div>'
+        f'{prepaid_html}'
+        f'{ledger_html}'
+        f'{nonai_html}'
+    )
 
 
 PUBLIC_LABELS = {
@@ -2020,8 +2196,8 @@ async function poll(){
 body{{background:radial-gradient(ellipse 90% 55% at 50% -18%,rgba(56,139,253,.16),transparent 65%),radial-gradient(ellipse 60% 40% at 85% 10%,rgba(163,113,247,.08),transparent 60%),#090d13;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;padding:28px 28px 56px;max-width:1180px;margin:0 auto;line-height:1.45;-webkit-font-smoothing:antialiased}}
 .page-head{{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 20px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid rgba(240,246,252,.07)}}
 h1{{font-size:26px;font-weight:750;letter-spacing:-.025em;margin:0 0 6px;color:#f0f6fc;display:flex;align-items:center;gap:10px}}
-.ts{{color:#8b949e;font-size:13px;margin:0;line-height:1.5;display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
-.ts::before{{content:"";display:inline-block;width:7px;height:7px;border-radius:99px;background:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.75)}}
+.ts{{position:relative;padding-left:15px;color:#8b949e;font-size:13px;margin:0;line-height:1.5}}
+.ts::before{{content:"";position:absolute;left:0;top:.48em;width:7px;height:7px;border-radius:99px;background:#3fb950;box-shadow:0 0 8px rgba(63,185,80,.75)}}
 h2{{font-size:17.5px;font-weight:650;letter-spacing:-.015em;color:#f0f6fc;margin:34px 0 14px}}
 a{{color:#58a6ff;text-decoration:none;transition:color .15s}} a:hover{{color:#79c0ff;text-decoration:underline}}
 .nav{{position:sticky;top:12px;z-index:20;display:flex;gap:6px;width:max-content;max-width:100%;padding:5px;margin:0 0 22px;background:rgba(17,22,29,.84);border:1px solid rgba(240,246,252,.11);border-radius:13px;backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);box-shadow:0 10px 28px rgba(0,0,0,.38)}}
@@ -2033,10 +2209,11 @@ a{{color:#58a6ff;text-decoration:none;transition:color .15s}} a:hover{{color:#79
 .update-notice button:hover{{transform:scale(1.03)}}
 [hidden]{{display:none!important}}
 .summary-strip{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:0 0 20px}}
+.summary-strip.subs-kpi{{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .kpi{{background:linear-gradient(180deg,rgba(24,30,40,.9) 0%,rgba(16,20,28,.95) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:13px 16px;display:flex;flex-direction:column;gap:3px;box-shadow:0 4px 14px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.04)}}
 .kpi-label{{font-size:11.5px;font-weight:600;color:#8b949e;letter-spacing:.02em}}
-.kpi-val{{font-size:24px;font-weight:750;color:#f0f6fc;letter-spacing:-.03em;line-height:1.15;font-variant-numeric:tabular-nums}}
-.kpi-sub{{font-size:11px;color:#6e7681;margin-top:1px}}
+.kpi-val{{font-size:24px;font-weight:750;color:#f0f6fc;letter-spacing:-.03em;line-height:1.15;font-variant-numeric:tabular-nums;word-break:break-word}}
+.kpi-sub{{font-size:11px;color:#6e7681;margin-top:1px;line-height:1.35}}
 .kpi.ok .kpi-val{{color:#3fb950}}
 .kpi.warn .kpi-val{{color:#f0883e}}
 .kpi.bad .kpi-val{{color:#ff7b72}}
@@ -2045,23 +2222,30 @@ table{{border-collapse:separate;border-spacing:0;width:100%;background:rgba(22,2
 td{{border-bottom:1px solid rgba(48,54,61,.6);padding:10px 14px;font-size:14px}}
 tr:last-child td{{border-bottom:0}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px;align-items:stretch}}
-.card{{position:relative;overflow:hidden;display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(26,32,43,.94) 0%,rgba(16,21,29,.98) 100%);border:1px solid rgba(56,63,73,.78);border-radius:16px;padding:18px 20px;box-shadow:0 6px 22px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.05);transition:transform .2s cubic-bezier(.16,1,.3,1),border-color .2s ease,box-shadow .2s ease}}
-.card::before{{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;background:linear-gradient(90deg,rgba(88,166,255,.65),rgba(88,166,255,.1));opacity:.85}}
-.card[data-provider="codex"]::before{{background:linear-gradient(90deg,#10b981,#34d399)}}
-.card[data-provider="claude"]::before{{background:linear-gradient(90deg,#f97316,#fb923c)}}
-.card[data-provider="gemini"]::before{{background:linear-gradient(90deg,#3b82f6,#60a5fa)}}
-.card[data-provider="argon"]::before{{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}}
-.card[data-provider="kimi"]::before{{background:linear-gradient(90deg,#06b6d4,#38bdf8)}}
-.card[data-provider="minimax"]::before{{background:linear-gradient(90deg,#ec4899,#f472b6)}}
+.prepaid-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}}
+.card,.scard{{position:relative;overflow:hidden;display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(26,32,43,.94) 0%,rgba(16,21,29,.98) 100%);border:1px solid rgba(56,63,73,.78);border-radius:16px;padding:18px 20px;box-shadow:0 6px 22px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.05);transition:transform .2s cubic-bezier(.16,1,.3,1),border-color .2s ease,box-shadow .2s ease}}
+.card::before,.scard::before{{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;background:linear-gradient(90deg,rgba(88,166,255,.65),rgba(88,166,255,.1));opacity:.85}}
+.card[data-provider="codex"]::before,.scard[data-provider="codex"]::before{{background:linear-gradient(90deg,#10b981,#34d399)}}
+.card[data-provider="claude"]::before,.scard[data-provider="claude"]::before{{background:linear-gradient(90deg,#f97316,#fb923c)}}
+.card[data-provider="gemini"]::before,.scard[data-provider="gemini"]::before{{background:linear-gradient(90deg,#3b82f6,#60a5fa)}}
+.card[data-provider="argon"]::before,.scard[data-provider="argon"]::before{{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}}
+.card[data-provider="kimi"]::before,.scard[data-provider="kimi"]::before{{background:linear-gradient(90deg,#06b6d4,#38bdf8)}}
+.card[data-provider="minimax"]::before,.scard[data-provider="minimax"]::before{{background:linear-gradient(90deg,#ec4899,#f472b6)}}
+.scard[data-provider="zhipu"]::before{{background:linear-gradient(90deg,#6366f1,#818cf8)}}
+.scard[data-provider="proxy"]::before{{background:linear-gradient(90deg,#f59e0b,#fbbf24)}}
+.scard[data-provider="deepseek"]::before{{background:linear-gradient(90deg,#0ea5e9,#38bdf8)}}
 .top{{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}}
 .title-wrap{{display:flex;flex-direction:column;gap:4px;min-width:0}}
 .pbadge{{display:inline-flex;align-items:center;gap:4px;width:max-content;font-size:10.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.13);border:1px solid rgba(240,246,252,.07);padding:2px 7px;border-radius:6px;letter-spacing:.02em}}
-.card[data-provider="claude"] .pbadge{{color:#fdba74;background:rgba(249,115,22,.12);border-color:rgba(249,115,22,.24)}}
-.card[data-provider="gemini"] .pbadge{{color:#93c5fd;background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.24)}}
-.card[data-provider="argon"] .pbadge{{color:#c4b5fd;background:rgba(139,92,246,.12);border-color:rgba(139,92,246,.24)}}
-.card[data-provider="codex"] .pbadge{{color:#6ee7b7;background:rgba(16,185,129,.12);border-color:rgba(16,185,129,.24)}}
-.card[data-provider="kimi"] .pbadge{{color:#7dd3fc;background:rgba(6,182,212,.12);border-color:rgba(6,182,212,.24)}}
-.card[data-provider="minimax"] .pbadge{{color:#f9a8d4;background:rgba(236,72,153,.12);border-color:rgba(236,72,153,.24)}}
+[data-provider="claude"] .pbadge{{color:#fdba74;background:rgba(249,115,22,.12);border-color:rgba(249,115,22,.24)}}
+[data-provider="gemini"] .pbadge{{color:#93c5fd;background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.24)}}
+[data-provider="argon"] .pbadge{{color:#c4b5fd;background:rgba(139,92,246,.12);border-color:rgba(139,92,246,.24)}}
+[data-provider="codex"] .pbadge{{color:#6ee7b7;background:rgba(16,185,129,.12);border-color:rgba(16,185,129,.24)}}
+[data-provider="kimi"] .pbadge{{color:#7dd3fc;background:rgba(6,182,212,.12);border-color:rgba(6,182,212,.24)}}
+[data-provider="minimax"] .pbadge{{color:#f9a8d4;background:rgba(236,72,153,.12);border-color:rgba(236,72,153,.24)}}
+[data-provider="zhipu"] .pbadge{{color:#a5b4fc;background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.24)}}
+[data-provider="proxy"] .pbadge{{color:#fcd34d;background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.24)}}
+[data-provider="deepseek"] .pbadge{{color:#7dd3fc;background:rgba(14,165,233,.12);border-color:rgba(14,165,233,.24)}}
 .name{{font-size:15.5px;font-weight:650;color:#f0f6fc;letter-spacing:-.01em;line-height:1.3;word-break:break-word}}
 .win-label{{font-size:11px;font-weight:600;color:#8b949e;letter-spacing:.01em;margin-bottom:2px}}
 .pill{{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;letter-spacing:.02em;flex-shrink:0;border:1px solid transparent;margin-top:2px}}
@@ -2070,6 +2254,7 @@ tr:last-child td{{border-bottom:0}}
 .pill.stale{{background:rgba(139,148,158,.14);color:#8b949e;border-color:rgba(139,148,158,.28)}}
 .pill.warn{{background:rgba(240,136,62,.14);color:#f0883e;border-color:rgba(240,136,62,.32)}}
 .card.urgent{{border-color:rgba(240,136,62,.55);background:linear-gradient(180deg,rgba(240,136,62,.08) 0%,rgba(16,21,29,.98) 48%)}}
+.scard.urgent{{border-color:rgba(248,81,73,.42);background:linear-gradient(180deg,rgba(248,81,73,.07) 0%,rgba(16,21,29,.98) 48%)}}
 .stat-row{{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:2px 0 9px}}
 .pct{{font-size:36px;font-weight:750;letter-spacing:-1.5px;line-height:1;font-variant-numeric:tabular-nums}}
 .remain{{font-size:12.5px;font-weight:600;color:#c9d1d9;background:rgba(110,118,129,.15);border:1px solid rgba(240,246,252,.08);padding:3px 9px;border-radius:7px;font-variant-numeric:tabular-nums}}
@@ -2091,21 +2276,37 @@ tr:last-child td{{border-bottom:0}}
 .sub-pct{{font-size:13px;font-weight:700}}
 .sub-rem,.sub-tag{{font-size:10.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.14);border:1px solid rgba(240,246,252,.06);padding:1px 6px;border-radius:5px}}
 .sub-box .meta{{margin-top:6px;font-size:11.5px;color:#8b949e}}
-.meta.nonai{{padding:6px 0;border-bottom:1px dashed #21262d}}
 .card:hover,.scard:hover{{transform:translateY(-2px);border-color:rgba(88,166,255,.55);box-shadow:0 12px 30px rgba(0,0,0,.38),0 0 0 1px rgba(88,166,255,.12)}}
-.sgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}}
-.scard{{background:linear-gradient(180deg,rgba(28,34,44,.9) 0%,rgba(19,24,32,.95) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:15px 18px;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}}
-.scard.mini{{padding:11px 15px}}
-.sname{{font-size:14px;font-weight:600;color:#f0f6fc;margin-bottom:6px}}
-.scost{{font-size:19px;font-weight:700;color:#58a6ff;margin-bottom:6px;font-variant-numeric:tabular-nums}}
-.smeta{{font-size:12.5px;color:#8b949e}}
-.cd{{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;margin-left:6px;white-space:nowrap}}
-.cd.green{{background:rgba(63,185,80,.14);color:#3fb950}}
-.cd.yellow{{background:rgba(210,153,34,.14);color:#d29922}}
-.cd.red{{background:rgba(248,81,73,.14);color:#ff7b72}}
-.totalband{{background:linear-gradient(135deg,rgba(88,166,255,.12),rgba(88,166,255,.04));border:1px solid rgba(88,166,255,.32);border-radius:12px;padding:12px 18px;font-size:15px;font-weight:600;margin-bottom:16px}}
-table.ledger td{{font-size:14px;padding:9px 14px}}
-table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}}
+.sname{{font-size:15px;font-weight:650;color:#f0f6fc;letter-spacing:-.01em;line-height:1.35;word-break:break-word}}
+.scost-main{{font-size:23px;font-weight:750;color:#58a6ff;letter-spacing:-.02em;line-height:1.25;margin:2px 0 12px;font-variant-numeric:tabular-nums}}
+.scost-main.compact{{font-size:17.5px;line-height:1.35}}
+.scost-main.compact.long{{font-size:15.5px;line-height:1.4}}
+.scost-main.free{{color:#3fb950}}
+.scost-note{{font-size:12px;color:#8b949e;line-height:1.5;background:rgba(11,15,21,.52);border:1px solid rgba(48,54,61,.6);border-radius:10px;padding:8px 11px;margin:0 0 12px}}
+.prepaid-card .scost-main{{margin-bottom:4px}}
+.prepaid-card .sub-box{{margin:12px 0}}
+.prepaid-card .sub-box .meta{{margin-top:0;font-size:12.5px;color:#c9d1d9}}
+.smeta{{font-size:12.5px;color:#8b949e;font-variant-numeric:tabular-nums}}
+.cd{{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;margin-left:6px;white-space:nowrap;border:1px solid transparent;flex-shrink:0}}
+.top .cd{{margin-left:0;margin-top:2px}}
+.cd.green{{background:rgba(63,185,80,.12);color:#3fb950;border-color:rgba(63,185,80,.28)}}
+.cd.yellow{{background:rgba(210,153,34,.14);color:#d29922;border-color:rgba(210,153,34,.3)}}
+.cd.red{{background:rgba(248,81,73,.14);color:#ff7b72;border-color:rgba(248,81,73,.32)}}
+.cd.neutral{{background:rgba(110,118,129,.15);color:#9ca3af;border-color:rgba(240,246,252,.08)}}
+.table-wrap{{overflow-x:auto;border:1px solid rgba(56,63,73,.78);border-radius:16px;background:linear-gradient(180deg,rgba(24,30,40,.9) 0%,rgba(15,20,27,.96) 100%);box-shadow:0 6px 22px rgba(0,0,0,.24)}}
+table.ledger{{border:0;border-radius:0;background:transparent}}
+table.ledger thead th{{background:rgba(11,15,21,.65);color:#8b949e;font-size:11.5px;font-weight:650;letter-spacing:.03em;padding:11px 16px;text-align:left;border-bottom:1px solid rgba(56,63,73,.72);white-space:nowrap}}
+table.ledger thead th.amt{{text-align:right}}
+table.ledger tbody tr{{transition:background .15s ease}}
+table.ledger tbody tr:hover{{background:rgba(56,139,253,.06)}}
+table.ledger td{{font-size:13.5px;padding:11px 16px;border-bottom:1px solid rgba(48,54,61,.5)}}
+table.ledger td.ldate{{color:#8b949e;white-space:nowrap;width:118px;font-variant-numeric:tabular-nums}}
+table.ledger td.litem{{color:#e6edf3;font-weight:500}}
+table.ledger td.amt{{text-align:right;color:#f0883e;font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums}}
+table.ledger td.amt.credit{{color:#3fb950}}
+table.ledger td.amt.zero{{color:#8b949e}}
+.nonai-card .top{{margin-bottom:6px}}
+.nonai-desc{{font-size:12.5px;color:#9ca3af;line-height:1.55}}
 .meta.dim{{color:#6e7681;font-size:11.5px;margin-top:auto;padding-top:11px;border-top:1px solid rgba(48,54,61,.45)}}
 .card > .main-meta + .meta.dim{{margin-top:auto}}
 .card > .sub-box + .meta.dim{{margin-top:11px}}
@@ -2119,8 +2320,9 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-varia
 .hbar{{flex:1;height:9px;background:rgba(110,118,129,.16);border-radius:99px;overflow:hidden}}
 .hfill{{height:100%;background:linear-gradient(90deg,#1f6feb 0%,#58a6ff 100%);border-radius:99px}}
 .hval{{width:76px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0;font-variant-numeric:tabular-nums}}
-.section-head{{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-top:34px}}
-.section-head h2{{margin:0 0 10px}}
+.section-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:30px 0 12px}}
+.section-head h2{{margin:0}}
+.section-count{{font-size:11.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.13);border:1px solid rgba(240,246,252,.07);padding:3px 10px;border-radius:99px;white-space:nowrap}}
 .more-link{{font-size:13px;font-weight:500;white-space:nowrap}}
 .history-tools{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 0 14px}}
 .range-switch{{display:flex;gap:6px}}
@@ -2130,19 +2332,24 @@ table.ledger td.amt{{color:#d29922;font-weight:600;white-space:nowrap;font-varia
 .range-switch button.active{{background:#1f6feb;border-color:#1f6feb;color:#fff;box-shadow:0 2px 8px rgba(31,111,235,.35)}}
 .source-filter{{display:flex;align-items:center;gap:8px;color:#8b949e;font-size:12.5px}}
 @media(min-width:960px){{
-  .grid{{grid-template-columns:repeat(3,1fr)}}
+  .grid{{grid-template-columns:repeat(3,minmax(0,1fr))}}
 }}
 @media(min-width:601px) and (max-width:959px){{
-  .grid{{grid-template-columns:repeat(2,1fr)}}
+  .grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}
   .summary-strip{{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  .summary-strip.subs-kpi{{grid-template-columns:repeat(2,minmax(0,1fr))}}
 }}
 @media(max-width:600px){{
   body{{padding:18px 14px 32px}}
   .nav{{top:6px;width:100%;justify-content:space-between}}
-  .nav a{{padding:7px 9px}}
-  .summary-strip{{grid-template-columns:repeat(2,minmax(0,1fr))}}
-  .grid{{grid-template-columns:1fr}}
-  .section-head{{align-items:flex-start}}
+  .nav a{{padding:7px 9px;font-size:12.5px}}
+  .card,.scard,.kpi,.title-wrap{{min-width:0}}
+  .summary-strip,.summary-strip.subs-kpi{{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .grid,.prepaid-grid{{grid-template-columns:minmax(0,1fr)}}
+  .section-head{{align-items:center}}
+  table.ledger thead th,table.ledger td{{padding:9px 11px;font-size:12.5px}}
+  table.ledger td.ldate{{width:86px;font-size:12px}}
+  table.ledger td.amt{{white-space:normal;max-width:128px;line-height:1.35}}
   .history-tools{{align-items:stretch;flex-direction:column}}
   .source-filter select{{flex:1}}
   .hrow{{gap:7px}}

@@ -924,6 +924,74 @@ class PrepaidSubscriptionTests(unittest.TestCase):
         self.assertEqual(fin, {"subs": [], "prepaid": [], "ledger": [], "non_ai": [], "total_ai": "", "total_all": ""})
         self.assertEqual(html, "")
 
+    def test_split_cost_headline_and_sub_card_formatting(self):
+        self.assertEqual(
+            quota_report._split_cost_headline("100 美元/月（实扣人民币 667 元）"),
+            ("100 美元/月", "实扣人民币 667 元"),
+        )
+        self.assertEqual(
+            quota_report._split_cost_headline("朋友 付费，不计入本人支出"),
+            ("朋友 付费", "不计入本人支出"),
+        )
+        self.assertEqual(
+            quota_report._split_cost_headline("490 元/年"),
+            ("490 元/年", ""),
+        )
+        self.assertEqual(quota_report._sub_provider_meta("DeepSeek API")[0], "deepseek")
+        self.assertEqual(quota_report._sub_provider_meta("智谱 ChatGLM")[0], "zhipu")
+
+    def test_subs_html_renders_kpi_countdowns_reversed_ledger_and_nonai_cards(self):
+        finance_text = """## 一、当前在用订阅
+| 产品 | 档位/形式 | 费用 | 计费周期 | 刷新/到期时间 | 状态与证据 |
+|------|----------|------|----------|--------------|-----------|
+| ChatGPT Pro | 100 刀 | 100 美元/月（实扣 667 元） | 月付 | 2026-10-27 续订，下次扣费 2026-11-27 | 确认 |
+| 朋友 Kimi | 个人 | 朋友 付费，不计入本人支出 | 年付 | 每月 17 日；2027-08-17 到期 | 确认 |
+| 智谱 ChatGLM | Coding | 0 元 | 年付 | 2027-05-25 到期 | 确认 |
+
+## 二、历史充值与一次性消费
+| 日期 | 项目 | 金额 | 备注 |
+|------|------|------|------|
+| 2026-02-02 | Kimi Agent | 948 元 | 年费 |
+| 2026-11-04 | GPT 分摊结清 | -240.00 元（回款冲抵） | 冲抵 |
+
+## 四、月度支出估算
+- AI 固定订阅合计（本人实付）：约 270 元/月
+- 非 AI 固定订阅：
+  - iCloud：21 元/月（252 元/年）
+  - 百度网盘：会员 2026-10-25 到期。决定不续，Codex 改走本地
+  - 视频会员：0 元——手机卡会员活动，白嫖一年
+- 固定订阅总额约 **310 元/月**
+"""
+
+        class _FixedDate(quota_report.dt.date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 11, 14)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(finance_text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path), \
+                 mock.patch.object(quota_report.dt, "date", _FixedDate):
+                html = quota_report._subs_html(public=True)
+
+        self.assertIn('class="summary-strip subs-kpi"', html)
+        self.assertIn("270 元/月", html)
+        self.assertIn("310 元/月", html)
+        self.assertIn("最近：ChatGPT Pro（剩 13 天）", html)
+        self.assertIn('class="scard sub-card urgent" data-provider="codex"', html)
+        self.assertIn("📅 下次扣费 2026-11-27", html)
+        self.assertIn('class="scost-main compact free">朋友 付费</div>', html)
+        self.assertIn('class="scost-note">不计入本人支出</div>', html)
+        self.assertIn('class="scost-main free">0 元</div>', html)
+        self.assertLess(html.index("2026-11-04"), html.index("2026-02-02"))
+        self.assertIn("<thead><tr><th>日期</th><th>项目</th><th class=\"amt\">金额</th></tr></thead>", html)
+        self.assertIn("<td class='amt credit'>-240.00 元（回款冲抵）</td>", html)
+        self.assertIn("<td class='litem'>⚡ GPT 分摊结清</td>", html)
+        self.assertIn("💾 百度网盘", html)
+        self.assertIn("<span class='cd neutral'>已停续</span>", html)
+        self.assertIn("<span class='cd green'>0 元</span>", html)
+
 
 class EmailPrivacyTests(unittest.TestCase):
     def test_static_live_and_public_pages_mask_cards_notes_errors_and_alerts(self):
