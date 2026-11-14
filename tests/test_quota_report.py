@@ -40,7 +40,7 @@ class AntigravityQuotaTests(unittest.TestCase):
     def test_enrich_antigravity_rows_promotes_flash_and_claude_to_dual_windows(self):
         panel = """
 GEMINI MODELS
-  Models within this group: Gemini Flash, Gemini Pro
+  Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash
 
   Weekly Limit Remaining
     86.11%
@@ -52,7 +52,7 @@ GEMINI MODELS
 """
         sub_rows = [
             {
-                "name": "Gemini · 3.8 Flash",
+                "name": "Gemini 4 Hydrogen",
                 "status": "ok",
                 "used_pct": 23.0,
                 "used_text": "23%",
@@ -1021,7 +1021,7 @@ class AuditBugFixTests(unittest.TestCase):
             last_path = root / "last-good.json"
             with mock.patch.object(quota_report, "AGY_GROUPS_CACHE", agy_path), \
                  mock.patch.object(quota_report, "LAST_GOOD_JSON", last_path):
-                quota_report._save_agy_groups_cache({"Gemini · 3.8 Flash": {"used_pct": 1.0}})
+                quota_report._save_agy_groups_cache({"Gemini 4 Hydrogen": {"used_pct": 1.0}})
                 quota_report._save_last_good([{"name": "MiniMax", "status": "ok", "used_pct": None}])
             self.assertEqual(agy_path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(last_path.stat().st_mode & 0o777, 0o600)
@@ -1120,6 +1120,65 @@ class AuditBugFixTests(unittest.TestCase):
         for page in (overview, hist_page):
             self.assertIn("Kimi · 副账号", page)
             self.assertNotIn("私密代号", page)
+
+    def test_daily_deltas_merges_legacy_flash_name_into_gemini_4_hydrogen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "quota-log.csv"
+            csv_path.write_text(
+                "ts,name,status,used_pct,used_text,reset,fiveh_text\n"
+                "2026-11-13T23:30:00,Gemini · 3.8 Flash,ok,10,10%,11-21 09:50,\n"
+                "2026-11-14T14:30:00,Gemini 4 Hydrogen,ok,22,22%,11-21 09:50,\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(quota_report, "LOG_CSV", csv_path), \
+                 mock.patch.object(quota_report, "_quota_hidden", return_value=False):
+                deltas = dict(quota_report._daily_deltas(days=7, public=False))
+        self.assertEqual(deltas["2026-11-14"], [
+            {"name": "Gemini 4 Hydrogen", "delta": 12.0, "reset": False, "partial": False}
+        ])
+
+    def test_overview_frontend_filter_bar_and_clean_fiveh_label(self):
+        rows = [
+            {
+                "name": "Gemini 4 Hydrogen",
+                "status": "ok",
+                "used_pct": 16.0,
+                "used_text": "16%",
+                "reset": "11-21 09:50",
+                "fiveh_pct": 47.0,
+                "fiveh_text": "47%",
+                "fiveh_reset": "11-14 14:51",
+                "fiveh_label": "5h 窗",
+            },
+            {"name": "Codex · a@example.com", "status": "ok", "used_pct": 5.0, "used_text": "5%", "reset": "11-20 10:00"},
+            {"name": "Kimi · 主账号", "status": "ok", "used_pct": 25.0, "used_text": "25%", "reset": "11-18 10:00"},
+            {"name": "MiniMax", "status": "ok", "used_pct": None, "fiveh_pct": 10.0, "fiveh_text": "10%", "fiveh_reset": "11-14 15:00"},
+        ]
+        with mock.patch.object(quota_report, "_daily_deltas", return_value=[]):
+            html = quota_report.render_html(rows, public=False, page="overview")
+        self.assertIn('class="filter-bar"', html)
+        self.assertIn('data-filter="gemini"', html)
+        self.assertIn("⚡ 5h 限流窗", html)
+        self.assertNotIn("5h 窗（5h 限流窗）", html)
+        self.assertIn("window.__applyOverviewFilter?.()", html)
+
+    def test_subscriptions_ledger_collapses_after_eight_entries(self):
+        ledger = [{"date": f"2026-10-{i:02d}", "item": f"条目 {i}", "amount": "10 元"} for i in range(1, 11)]
+        fin = {
+            "subs": [{"name": "MiniMax", "cost": "490 元/年", "renewal": "2027-03-22 到期"}],
+            "prepaid": [],
+            "ledger": ledger,
+            "non_ai": ["ikuuu：2026-11-21 到期"],
+            "total_ai": "100 元/月",
+            "total_all": "120 元/月",
+        }
+        with mock.patch.object(quota_report, "_load_finance", return_value=fin), \
+             mock.patch.object(quota_report, "_quota_hidden", return_value=False):
+            html = quota_report.render_html([], public=False, page="subscriptions")
+        self.assertIn('id="ledgerToggle"', html)
+        self.assertIn("展开全部 10 笔明细 ↓", html)
+        self.assertEqual(html.count('class="ledger-extra" hidden'), 2)
+        self.assertLess(html.index("🧾 非 AI 固定订阅"), html.index("📒 消费台账（历史充值）"))
 
 
 if __name__ == "__main__":

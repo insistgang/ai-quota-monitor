@@ -177,10 +177,10 @@ def _save_agy_groups_cache(groups: dict[str, dict]) -> None:
 
 
 def _enrich_antigravity_rows(rows: list[dict]) -> list[dict]:
-    """为 Sub2API 拆出的 Gemini · 3.8 Flash / Gemini · Claude 补齐周额度 + 5h 双窗口。"""
+    """为 Sub2API 拆出的 Gemini 4 Hydrogen / Gemini · Claude 补齐周额度 + 5h 双窗口。"""
     needs_enrichment = any(
         r.get("status") == "ok"
-        and r.get("name") in {"Gemini · 3.8 Flash", "Gemini · Claude"}
+        and r.get("name") in {"Gemini 4 Hydrogen", "Gemini · Claude"}
         and r.get("fiveh_pct") is None
         and r.get("window_kind") == "5h"
         for r in rows
@@ -193,12 +193,12 @@ def _enrich_antigravity_rows(rows: list[dict]) -> list[dict]:
     groups = cache.get("groups") if isinstance(cache.get("groups"), dict) else {}
     cache_fresh = isinstance(captured_at, (int, float)) and 0 <= time.time() - float(captured_at) <= 1800
 
-    if not cache_fresh or "Gemini · 3.8 Flash" not in groups:
+    if not cache_fresh or "Gemini 4 Hydrogen" not in groups:
         text = _tmux_slash_probe(_agy_bin(), "/usage", wait_boot=12, wait_panel=6, pre_enter=False)
         if text:
             parsed_groups: dict[str, dict] = {}
             for marker, target_name in (
-                ("GEMINI MODELS", "Gemini · 3.8 Flash"),
+                ("GEMINI MODELS", "Gemini 4 Hydrogen"),
                 ("CLAUDE AND GPT MODELS", "Gemini · Claude"),
                 ("GEMINI 4 ARGON", "Gemini · 4 Argon"),
             ):
@@ -214,7 +214,7 @@ def _enrich_antigravity_rows(rows: list[dict]) -> list[dict]:
         name = r.get("name")
         if (
             r.get("status") == "ok"
-            and name in {"Gemini · 3.8 Flash", "Gemini · Claude"}
+            and name in {"Gemini 4 Hydrogen", "Gemini · Claude"}
             and r.get("fiveh_pct") is None
             and r.get("window_kind") == "5h"
             and isinstance(groups.get(name), dict)
@@ -495,13 +495,14 @@ def _alerts_html(alerts: list[dict]) -> str:
     if not alerts:
         return ""
     items = "".join(
-        f"<li><b>{_html_text(a['name'])}</b> · "
-        f"{_html_text('周额度' if a['kind']=='week' else a.get('window_label', '5h 窗'))} "
-        f"{_html_text(a['until'])}刷新"
-        f"，还剩 {a['remain']:.0f}%，抓紧用</li>"
+        f"<li><span class='alert-name'><b>{_html_text(a['name'])}</b></span>"
+        f"<span class='alert-detail'>"
+        f"<span class='alert-win'>{_html_text('周额度' if a['kind']=='week' else a.get('window_label', '5h 窗'))}</span>"
+        f"<span class='alert-time'>{_html_text(a['until'])}刷新</span>"
+        f"<strong class='alert-rem'>还剩 {a['remain']:.0f}%</strong></span></li>"
         for a in alerts
     )
-    return f"""<div class="alertband"><h3>快刷新了，剩余额度抓紧用</h3><ul>{items}</ul></div>"""
+    return f"""<div class="alertband"><h3>⚡ 快刷新了，剩余额度抓紧用</h3><ul>{items}</ul></div>"""
 
 
 # ---------- 输出 ----------
@@ -580,7 +581,7 @@ def _card(r: dict, alert: dict | None = None) -> str:
     name = _html_text(r["name"])
     pkey, pbadge, picon = _provider_meta(r["name"])
     if r.get("status") != "ok":
-        return f"""<div class="card" data-provider="{pkey}"><div class="top"><div class="title-wrap"><span class="pbadge">{picon} {pbadge}</span><span class="name">{name}</span></div>
+        return f"""<div class="card" data-provider="{pkey}" data-state="attn"><div class="top"><div class="title-wrap"><span class="pbadge">{picon} {pbadge}</span><span class="name">{name}</span></div>
 <span class="pill bad">异常</span></div><div class="msg">{_html_text(r['status'])}</div></div>"""
     rem = _remain_pct(r)
     # 没有周额度、只有短时/5h 窗口的模型（如 MiniMax）：主卡片直接展示短时窗口，避免显示空的"本周已用 未提供"
@@ -613,8 +614,13 @@ def _card(r: dict, alert: dict | None = None) -> str:
             f_rem_badge = f"<span class='sub-rem'>剩 {f_rem:g}%</span>" if f_rem is not None else ""
             f_pct_badge = f"<span class='sub-pct' style='color:{fc}'>{fp:g}%</span>" if fp is not None else ""
             f_exh = " exhausted" if (fp is not None and fp >= 100) else ""
-            window_label = _html_text(r.get("fiveh_label", "5h 窗"))
-            fiveh = f"""<div class="sub-box{f_exh}"><div class="sub-head"><span class="sub">⚡ {window_label}（5h 限流窗）</span><span class="sub-stats">{f_pct_badge}{f_rem_badge}</span></div>
+            raw_fiveh_label = r.get("fiveh_label", "5h 窗")
+            fiveh_title = (
+                "5h 限流窗"
+                if raw_fiveh_label == "5h 窗"
+                else f"{_html_text(raw_fiveh_label)}（5h 限流窗）"
+            )
+            fiveh = f"""<div class="sub-box{f_exh}"><div class="sub-head"><span class="sub">⚡ {fiveh_title}</span><span class="sub-stats">{f_pct_badge}{f_rem_badge}</span></div>
 <div class="bar small"><div class="fill" style="width:{min(100, max(0, fp or 0))}%;background:{fc}"></div></div>
 <div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div></div>"""
         elif not r.get("sub_quotas"):
@@ -639,20 +645,31 @@ def _card(r: dict, alert: dict | None = None) -> str:
         sub_bars = "".join(blocks)
     note = f"<div class='meta dim'>{_html_text(r['note'])}</div>" if r.get("note") else ""
     urgent = " urgent" if alert else ""
+    weekly_rem = _remain_pct(r, "used_pct")
+    fp_val = r.get("fiveh_pct")
     if r.get("cache_fallback"):
         pill = "<span class='pill stale'>使用缓存</span>"
     elif r.get("stale"):
         pill = "<span class='pill stale'>快照过期</span>"
     else:
-        weekly_rem = _remain_pct(r, "used_pct")
-        fp_val = r.get("fiveh_pct")
         if weekly_rem is not None and weekly_rem <= 3:
             pill = "<span class='pill bad'>已用完</span>"
         elif fp_val is not None and fp_val >= 100:
             pill = "<span class='pill bad'>5h 已满</span>"
         else:
             pill = "<span class='pill warn'>抓紧用</span>" if alert else "<span class='pill ok'>正常</span>"
-    return f"""<div class="card{urgent}" data-provider="{pkey}"><div class="top"><div class="title-wrap"><span class="pbadge">{picon} {pbadge}</span><span class="name">{name}</span></div>
+    card_state = (
+        "attn"
+        if (
+            alert
+            or r.get("stale")
+            or r.get("cache_fallback")
+            or (weekly_rem is not None and weekly_rem <= 20)
+            or (fp_val is not None and fp_val >= 80)
+        )
+        else "ok"
+    )
+    return f"""<div class="card{urgent}" data-provider="{pkey}" data-state="{card_state}"><div class="top"><div class="title-wrap"><span class="pbadge">{picon} {pbadge}</span><span class="name">{name}</span></div>
 {pill}</div>
 <div class="win-label">{win_tag_label}</div>
 <div class="stat-row"><div class="pct" style="color:{c}">{pct_txt}</div>
@@ -1101,7 +1118,9 @@ def _prepaid_cards_html(prepaid_accounts: list[dict], pub) -> str:
 
 def _ledger_table_html(ledger: list[dict], pub) -> str:
     rows_html = []
-    for item in reversed(ledger):
+    limit = 8
+    recent_items = list(reversed(ledger))
+    for idx, item in enumerate(recent_items):
         amount = pub(item["amount"])
         raw_amt = amount.strip()
         if raw_amt.startswith("-") or any(k in raw_amt for k in ("回款", "冲抵", "获赠")):
@@ -1110,17 +1129,32 @@ def _ledger_table_html(ledger: list[dict], pub) -> str:
             amt_cls = "amt zero"
         else:
             amt_cls = "amt"
+        extra_attr = ' class="ledger-extra" hidden' if idx >= limit else ""
         rows_html.append(
-            f"<tr><td class='ldate'>{_html_text(item['date'])}</td>"
+            f"<tr{extra_attr}><td class='ldate'>{_html_text(item['date'])}</td>"
             f"<td class='litem'>{_svc_icon(item['item'])} {_html_text(pub(item['item']))}</td>"
             f"<td class='{amt_cls}'>{_html_text(amount)}</td></tr>"
+        )
+    toggle_html = ""
+    if len(recent_items) > limit:
+        toggle_html = (
+            f'<div class="ledger-footer">'
+            f'<button type="button" class="ledger-toggle" id="ledgerToggle" '
+            f'data-total="{len(recent_items)}" data-limit="{limit}">'
+            f'展开全部 {len(recent_items)} 笔明细 ↓</button></div>'
+            '<script>(()=>{const btn=document.getElementById("ledgerToggle");if(!btn)return;'
+            'let expanded=false;btn.addEventListener("click",()=>{'
+            'expanded=!expanded;'
+            'document.querySelectorAll("tr.ledger-extra").forEach(tr=>{tr.hidden=!expanded;});'
+            'btn.textContent=expanded?"收起历史明细 ↑":`展开全部 ${btn.dataset.total} 笔明细 ↓`;'
+            '});})();</script>'
         )
     return (
         '<div class="section-head"><h2>📒 消费台账（历史充值）</h2>'
         f'<span class="section-count">共 {len(ledger)} 笔 · 按时间倒序</span></div>'
         '<div class="table-wrap"><table class="ledger">'
         '<thead><tr><th>日期</th><th>项目</th><th class="amt">金额</th></tr></thead>'
-        f'<tbody>{"".join(rows_html)}</tbody></table></div>'
+        f'<tbody>{"".join(rows_html)}</tbody></table></div>{toggle_html}'
     )
 
 
@@ -1200,8 +1234,8 @@ def _subs_html(
         f'<span class="section-count">共 {len(visible_subs)} 项</span></div>'
         f'<div class="grid">{sub_cards}</div>'
         f'{prepaid_html}'
-        f'{ledger_html}'
         f'{nonai_html}'
+        f'{ledger_html}'
     )
 
 
@@ -1282,6 +1316,8 @@ def _daily_deltas(days: int = 7, *, public: bool = False) -> list[tuple[str, lis
             name = r[1].split("（")[0].strip()  # 合并标签改名（如 Kimi 本人 99/月→948/年）
             if name == "Gemini · Cloud (Claude)":
                 name = "Gemini · Claude"
+            elif name == "Gemini · 3.8 Flash":
+                name = "Gemini 4 Hydrogen"
             if _quota_hidden(name) or name.casefold() in hidden_names:
                 continue
             day_str = r[0][:10]
@@ -1359,7 +1395,7 @@ def _history_html(public: bool, days: int = 7, controls: bool = False,
                 tags = ("*" if r["partial"] else "") + (" ↺" if r["reset"] else "")
                 lines.append(
                     f'<div class="hrow" data-source="{_html_text(name)}">'
-                    f'<span class="hname">{_html_text(name)}</span>'
+                    f'<span class="hname" title="{_html_text(name)}">{_html_text(name)}</span>'
                     f'<div class="hbar"><div class="hfill" style="width:{w}%"></div></div>'
                     f'<span class="hval">+{r["delta"]:g}%{tags}</span></div>')
         else:
@@ -1370,9 +1406,11 @@ def _history_html(public: bool, days: int = 7, controls: bool = False,
             lines.append(
                 f'<div class="hrow dim" data-source="{_html_text(name)}">'
                 f'{_html_text(name)} ↺ 周重置</div>')
+        day_meta = f'<span class="hdate-meta">{len(shown)} 项有消耗</span>' if shown else ""
         blocks.append(
             f'<div class="hday" data-day-index="{day_index}">'
-            f'<div class="hdate">{_html_text(d[5:])}</div>{"".join(lines)}</div>')
+            f'<div class="hdate"><span class="hdate-day">{_html_text(d[5:])}</span>{day_meta}</div>'
+            f'{"".join(lines)}</div>')
 
     tools = ""
     if controls:
@@ -1449,6 +1487,7 @@ def _freshness_html(now: str, *, auto_update: bool = False) -> str:
         current=latest;
         notice.dataset.current=latest;
         notice.hidden=true;
+        window.__applyOverviewFilter?.();
         window.scrollTo(0,scrollY);
       }}else{{
         notice.hidden=false;
@@ -1485,6 +1524,8 @@ def _history_filter_script() -> str:
         row.hidden=!inRange || !matches;
         if(!row.hidden) hasVisibleRow=true;
       });
+      const meta=day.querySelector('.hdate-meta');
+      if(meta) meta.hidden=Boolean(selected);
       day.hidden=!inRange || !hasVisibleRow;
       if(!day.hidden) visibleDays+=1;
     });
@@ -1496,6 +1537,79 @@ def _history_filter_script() -> str:
   }));
   source?.addEventListener('change',applyFilters);
   applyFilters();
+})();
+</script>'''
+
+
+def _overview_filter_bar(visible_rows: list[dict], alerts: list[dict]) -> str:
+    if len(visible_rows) <= 3:
+        return ""
+    alert_names = {a.get("name") for a in alerts}
+    counts: dict[str, int] = {}
+    attn_count = 0
+    for r in visible_rows:
+        pkey, _, _ = _provider_meta(r.get("name", ""))
+        group_key = "gemini" if pkey in {"gemini", "argon"} else pkey
+        counts[group_key] = counts.get(group_key, 0) + 1
+        wrem = _remain_pct(r, "used_pct")
+        fp = r.get("fiveh_pct")
+        if (
+            r.get("status") != "ok"
+            or r.get("name") in alert_names
+            or r.get("stale")
+            or r.get("cache_fallback")
+            or (wrem is not None and wrem <= 20)
+            or (fp is not None and fp >= 80)
+        ):
+            attn_count += 1
+    buttons = [
+        f'<button type="button" class="filter-pill active" data-filter="all">全部 ({len(visible_rows)})</button>'
+    ]
+    if attn_count:
+        buttons.append(
+            f'<button type="button" class="filter-pill warn" data-filter="attn">⚡ 关注 ({attn_count})</button>'
+        )
+    for key, label in (
+        ("codex", "⚡ Codex"),
+        ("kimi", "🌙 Kimi"),
+        ("gemini", "✨ Gemini"),
+        ("claude", "🎭 Claude"),
+        ("minimax", "🎬 MiniMax"),
+    ):
+        if counts.get(key):
+            buttons.append(
+                f'<button type="button" class="filter-pill" data-filter="{key}">{label} ({counts[key]})</button>'
+            )
+    return f'<div class="filter-bar" role="toolbar" aria-label="按模型筛选">{"".join(buttons)}</div>'
+
+
+def _overview_filter_script() -> str:
+    return '''<script>
+(()=>{
+  window.__quotaFilter=window.__quotaFilter||'all';
+  function matchesCard(card,mode){
+    if(mode==='all') return true;
+    if(mode==='attn') return card.dataset.state==='attn';
+    const p=card.dataset.provider||'';
+    if(mode==='gemini') return p==='gemini'||p==='argon';
+    return p===mode;
+  }
+  window.__applyOverviewFilter=function(){
+    const mode=window.__quotaFilter||'all';
+    document.querySelectorAll('.filter-bar [data-filter]').forEach(btn=>{
+      btn.classList.toggle('active',btn.dataset.filter===mode);
+    });
+    document.querySelectorAll('.grid .card[data-provider]').forEach(card=>{
+      card.hidden=!matchesCard(card,mode);
+    });
+  };
+  document.addEventListener('click',ev=>{
+    const btn=ev.target.closest('.filter-bar [data-filter]');
+    if(!btn) return;
+    window.__quotaFilter=btn.dataset.filter||'all';
+    window.__applyOverviewFilter();
+  });
+  window.__applyOverviewFilter();
 })();
 </script>'''
 
@@ -1531,6 +1645,8 @@ def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
         cards = "".join(_card(r, alert_by_name.get(r["name"])) for r in visible_rows)
         banner = _alerts_html(alerts)
         summary_strip = _summary_strip_html(visible_rows, alerts)
+        filter_bar = _overview_filter_bar(visible_rows, alerts)
+        filter_script = _overview_filter_script() if filter_bar else ""
         live_ui = """
 <div style="margin:14px 0"><button id="rb" onclick="doRefresh()" style="background:linear-gradient(180deg,#2ea043 0%,#238636 100%);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:8px 18px;font-size:13.5px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(35,134,54,.3)">🔄 立即刷新全部额度</button>
 <span id="st" style="font-size:12.5px;color:#8b949e;margin-left:10px"></span></div>
@@ -1547,14 +1663,14 @@ async function poll(){
 }
 </script>""" if live else ""
     else:
-        cards = banner = summary_strip = live_ui = ""
+        cards = banner = summary_strip = filter_bar = filter_script = live_ui = ""
 
     if page == "overview":
         heading = "🤖 AI 额度监控"
         title = "AI 额度监控"
         detail = "卡片按周剩余从小到大"
         content = (
-            f'{live_ui}{summary_strip}{banner}<div class="grid">{cards}</div>'
+            f'{live_ui}{summary_strip}{banner}{filter_bar}<div class="grid">{cards}</div>'
             f'{_history_html(public, days=2, more_href="history.html", replacements=replacements)}'
         )
     elif page == "history":
@@ -1572,7 +1688,7 @@ async function poll(){
         title = "AI 额度监控"
         detail = "卡片按周剩余从小到大"
         content = (
-            f'{live_ui}{summary_strip}{banner}<div class="grid">{cards}</div>'
+            f'{live_ui}{summary_strip}{banner}{filter_bar}<div class="grid">{cards}</div>'
             f'{_history_html(public, replacements=replacements)}{_subs_html(public, replacements=replacements)}'
         )
 
@@ -1585,7 +1701,9 @@ async function poll(){
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
 *{{box-sizing:border-box}}
+html{{scroll-behavior:smooth}}
 body{{background:radial-gradient(ellipse 90% 55% at 50% -18%,rgba(56,139,253,.16),transparent 65%),radial-gradient(ellipse 60% 40% at 85% 10%,rgba(163,113,247,.08),transparent 60%),#090d13;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;padding:28px 28px 56px;max-width:1180px;margin:0 auto;line-height:1.45;-webkit-font-smoothing:antialiased}}
+:focus-visible{{outline:2px solid #58a6ff;outline-offset:2px}}
 .page-head{{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 20px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid rgba(240,246,252,.07)}}
 h1{{font-size:26px;font-weight:750;letter-spacing:-.025em;margin:0 0 6px;color:#f0f6fc;display:flex;align-items:center;gap:10px}}
 .ts{{position:relative;padding-left:15px;color:#8b949e;font-size:13px;margin:0;line-height:1.5}}
@@ -1652,10 +1770,21 @@ tr:last-child td{{border-bottom:0}}
 .stat-row{{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:2px 0 9px}}
 .pct{{font-size:36px;font-weight:750;letter-spacing:-1.5px;line-height:1;font-variant-numeric:tabular-nums}}
 .remain{{font-size:12.5px;font-weight:600;color:#c9d1d9;background:rgba(110,118,129,.15);border:1px solid rgba(240,246,252,.08);padding:3px 9px;border-radius:7px;font-variant-numeric:tabular-nums}}
-.alertband{{background:linear-gradient(135deg,rgba(240,136,62,.13) 0%,rgba(210,153,34,.05) 100%);border:1px solid rgba(240,136,62,.38);border-left:4px solid #f0883e;border-radius:14px;padding:14px 18px;margin:0 0 20px;box-shadow:0 4px 16px rgba(0,0,0,.18)}}
-.alertband h3{{margin:0 0 8px;font-size:14.5px;font-weight:650;color:#f0883e}}
-.alertband ul{{margin:0;padding-left:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px 18px}}
-.alertband li{{font-size:13.5px;color:#e6edf3;margin:0}}
+.alertband{{background:linear-gradient(135deg,rgba(240,136,62,.13) 0%,rgba(210,153,34,.05) 100%);border:1px solid rgba(240,136,62,.38);border-left:4px solid #f0883e;border-radius:14px;padding:14px 18px;margin:0 0 18px;box-shadow:0 4px 16px rgba(0,0,0,.18)}}
+.alertband h3{{margin:0 0 10px;font-size:14.5px;font-weight:650;color:#f0883e}}
+.alertband ul{{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px 12px}}
+.alertband li{{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px;color:#e6edf3;background:rgba(13,17,23,.52);border:1px solid rgba(240,136,62,.22);border-radius:10px;padding:7px 11px}}
+.alert-name{{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.alert-detail{{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;font-variant-numeric:tabular-nums}}
+.alert-win{{font-size:11px;font-weight:600;color:#d29922;background:rgba(210,153,34,.14);border:1px solid rgba(210,153,34,.25);padding:1px 6px;border-radius:5px}}
+.alert-time{{color:#c9d1d9}}
+.alert-rem{{color:#f0883e;font-weight:700}}
+.filter-bar{{display:flex;align-items:center;gap:8px;margin:0 0 16px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}}
+.filter-bar::-webkit-scrollbar{{display:none}}
+.filter-pill{{appearance:none;border:1px solid rgba(56,63,73,.85);background:rgba(22,27,34,.85);color:#9ca3af;border-radius:99px;padding:6px 13px;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:pointer;transition:all .16s ease}}
+.filter-pill:hover{{border-color:rgba(88,166,255,.55);color:#f0f6fc;background:rgba(30,38,48,.95)}}
+.filter-pill.active{{background:linear-gradient(180deg,#1f6feb 0%,#1a5bd0 100%);border-color:rgba(88,166,255,.65);color:#fff;box-shadow:0 2px 10px rgba(31,111,235,.32)}}
+.filter-pill.warn.active{{background:linear-gradient(180deg,#d97706 0%,#b45309 100%);border-color:rgba(240,136,62,.75);box-shadow:0 2px 10px rgba(240,136,62,.3)}}
 .bar{{height:8px;background:rgba(110,118,129,.2);border-radius:99px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.35)}}
 .bar.small{{height:6px;margin-top:6px}}
 .fill{{height:100%;border-radius:99px;transition:width .5s cubic-bezier(.22,1,.36,1)}}
@@ -1699,6 +1828,9 @@ table.ledger td.litem{{color:#e6edf3;font-weight:500}}
 table.ledger td.amt{{text-align:right;color:#f0883e;font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums}}
 table.ledger td.amt.credit{{color:#3fb950}}
 table.ledger td.amt.zero{{color:#8b949e}}
+.ledger-footer{{display:flex;justify-content:center;margin-top:12px}}
+.ledger-toggle{{appearance:none;border:1px solid rgba(56,63,73,.85);background:rgba(22,27,34,.9);color:#c9d1d9;border-radius:9px;padding:8px 16px;font-size:12.5px;font-weight:600;cursor:pointer;transition:all .16s ease}}
+.ledger-toggle:hover{{border-color:#58a6ff;color:#f0f6fc;background:rgba(30,38,48,.95)}}
 .nonai-card .top{{margin-bottom:6px}}
 .nonai-desc{{font-size:12.5px;color:#9ca3af;line-height:1.55}}
 .meta.dim{{color:#6e7681;font-size:11.5px;margin-top:auto;padding-top:11px;border-top:1px solid rgba(48,54,61,.45)}}
@@ -1707,12 +1839,13 @@ table.ledger td.amt.zero{{color:#8b949e}}
 .sub{{font-size:11.5px;color:#8b949e;margin-top:12px;line-height:1.5}}
 .msg{{font-size:13px;color:#d29922;margin-top:6px}}
 .hday{{background:linear-gradient(180deg,rgba(28,34,44,.88) 0%,rgba(19,24,32,.94) 100%);border:1px solid rgba(48,54,61,.85);border-radius:14px;padding:14px 18px;margin-bottom:12px;box-shadow:0 2px 10px rgba(0,0,0,.16)}}
-.hdate{{font-size:13px;font-weight:600;color:#8b949e;margin-bottom:10px;font-variant-numeric:tabular-nums}}
+.hdate{{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;font-weight:600;color:#8b949e;margin-bottom:10px;font-variant-numeric:tabular-nums}}
+.hdate-meta{{font-size:11px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.12);border:1px solid rgba(240,246,252,.06);padding:2px 8px;border-radius:99px}}
 .hrow{{display:flex;align-items:center;gap:12px;margin:6px 0;font-size:13px}}
 .hrow.dim{{color:#8b949e}}
-.hname{{width:176px;flex-shrink:0;color:#c9d1d9;font-weight:500}}
+.hname{{width:184px;flex-shrink:0;color:#c9d1d9;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 .hbar{{flex:1;height:9px;background:rgba(110,118,129,.16);border-radius:99px;overflow:hidden}}
-.hfill{{height:100%;background:linear-gradient(90deg,#1f6feb 0%,#58a6ff 100%);border-radius:99px}}
+.hfill{{height:100%;background:linear-gradient(90deg,#1f6feb 0%,#58a6ff 100%);border-radius:99px;transition:width .35s ease}}
 .hval{{width:76px;text-align:right;color:#58a6ff;font-weight:600;flex-shrink:0;font-variant-numeric:tabular-nums}}
 .section-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:30px 0 12px}}
 .section-head h2{{margin:0}}
@@ -1746,8 +1879,10 @@ table.ledger td.amt.zero{{color:#8b949e}}
   table.ledger td.amt{{white-space:normal;max-width:128px;line-height:1.35}}
   .history-tools{{align-items:stretch;flex-direction:column}}
   .source-filter select{{flex:1}}
+  .alertband ul{{grid-template-columns:minmax(0,1fr)}}
+  .alertband li{{flex-wrap:wrap;gap:6px 10px}}
   .hrow{{gap:7px}}
-  .hname{{width:112px}}
+  .hname{{width:128px;font-size:12.5px}}
   .hval{{width:66px}}
 }}
 </style></head><body>
@@ -1756,6 +1891,7 @@ table.ledger td.amt.zero{{color:#8b949e}}
 <div class="ts">更新于 {now} · {"公开快照 · 每小时自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · {detail}</div></div></header>
 <main id="quotaContent">{content}</main>
 {freshness}
+{filter_script}
 </body></html>"""
     if path is not None:
         path.write_text(html, encoding="utf-8")

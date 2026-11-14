@@ -160,7 +160,7 @@ def _antigravity_summary_windows(summary: object) -> dict[str, dict[str, tuple[f
             elif "argon" in gname or "argon" in bid:
                 label = "Gemini 4 Argon"
             elif "gemini" in gname:
-                label = "Gemini 3.8 Flash"
+                label = "Gemini 4 Hydrogen"
             else:
                 continue
             if win == "weekly" or "weekly" in bid:
@@ -269,15 +269,22 @@ def normalize_account(account: dict, snapshot: dict, *, now: float | None = None
             summary_windows = _antigravity_summary_windows(data.get("antigravity_quota_summary"))
             argon_candidates = [(_percent(w.get("utilization")), w.get("reset_time"))
                                 for n, w in models.items() if "gemini-4-argon" in n.lower()]
-            flash_candidates = [(_percent(w.get("utilization")), w.get("reset_time"))
-                                for n, w in models.items() if "gemini-3.8-flash" in n.lower() or ("gemini-3" in n.lower() and "flash" in n.lower() and "image" not in n.lower())]
+            hydrogen_candidates = [
+                (_percent(w.get("utilization")), w.get("reset_time"))
+                for n, w in models.items()
+                if (
+                    "gemini-4-hydrogen" in n.lower()
+                    or "gemini-3.8-flash" in n.lower()
+                    or ("gemini-3" in n.lower() and "flash" in n.lower() and "image" not in n.lower())
+                )
+            ]
             cloud_candidates = [(_percent(w.get("utilization")), w.get("reset_time"))
                                 for n, w in models.items() if n.lower().startswith("claude")]
 
             sub_quotas = []
             for label, cands, dual in (
                 ("Gemini 4 Argon", argon_candidates, False),
-                ("Gemini 3.8 Flash", flash_candidates, True),
+                ("Gemini 4 Hydrogen", hydrogen_candidates, True),
                 ("Claude", cloud_candidates, True),
             ):
                 sq = _build_antigravity_sub_quota(
@@ -314,13 +321,14 @@ def normalize_account(account: dict, snapshot: dict, *, now: float | None = None
 
 
 def split_antigravity_rows(row: dict) -> list[dict]:
-    """将 Antigravity 单账号拆分为 3 栏独立卡片：Gemini 4 Argon、Gemini 3.8 Flash 与 Claude。"""
+    """将 Antigravity 单账号拆分为 3 栏独立卡片：Gemini 4 Argon、Gemini 4 Hydrogen 与 Claude。"""
     if not row.get("sub_quotas"):
         return [row]
     sub_rows = []
     label_map = {
         "Gemini 4 Argon": "Gemini · 4 Argon",
-        "Gemini 3.8 Flash": "Gemini · 3.8 Flash",
+        "Gemini 4 Hydrogen": "Gemini 4 Hydrogen",
+        "Gemini 3.8 Flash": "Gemini 4 Hydrogen",
         "Claude": "Gemini · Claude",
         "Cloud (Claude)": "Gemini · Claude",
     }

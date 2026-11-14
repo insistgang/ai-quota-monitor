@@ -134,7 +134,7 @@ class NormalizationTests(unittest.TestCase):
     def test_antigravity_three_quotas_extracted(self):
         data = {"updated_at": iso(NOW), "antigravity_quota": {
             "gemini-4-argon-high": {"utilization": 12, "reset_time": iso(NOW + 3600)},
-            "gemini-3.8-flash-high": {"utilization": 24, "reset_time": iso(NOW + 7200)},
+            "gemini-4-hydrogen-high": {"utilization": 24, "reset_time": iso(NOW + 7200)},
             "claude-sonnet-5-5-high": {"utilization": 5, "reset_time": iso(NOW + 10800)},
         }}
         row = quota.normalize_account(account("antigravity", 9), snapshot(data, "antigravity", 9), now=NOW)
@@ -142,15 +142,15 @@ class NormalizationTests(unittest.TestCase):
         self.assertIn("sub_quotas", row)
         labels = {sq["label"]: sq["used_pct"] for sq in row["sub_quotas"]}
         self.assertEqual(labels["Gemini 4 Argon"], 12)
-        self.assertEqual(labels["Gemini 3.8 Flash"], 24)
+        self.assertEqual(labels["Gemini 4 Hydrogen"], 24)
         self.assertEqual(labels["Claude"], 5)
         self.assertIn("Argon 12%", row["note"])
-        self.assertIn("3.8 Flash 24%", row["note"])
+        self.assertIn("4 Hydrogen 24%", row["note"])
         self.assertIn("Claude 5%", row["note"])
         split = quota.split_antigravity_rows(row)
         self.assertEqual([r["name"] for r in split], [
             "Gemini · 4 Argon",
-            "Gemini · 3.8 Flash",
+            "Gemini 4 Hydrogen",
             "Gemini · Claude",
         ])
 
@@ -159,7 +159,7 @@ class NormalizationTests(unittest.TestCase):
             "updated_at": iso(NOW),
             "antigravity_quota": {
                 "gemini-4-argon-high": {"utilization": 3, "reset_time": iso(NOW + 5 * 86400)},
-                "gemini-3.8-flash-high": {"utilization": 23, "reset_time": iso(NOW + 7200)},
+                "gemini-4-hydrogen-xhigh": {"utilization": 23, "reset_time": iso(NOW + 7200)},
                 "claude-sonnet-5-5-high": {"utilization": 100, "reset_time": iso(NOW + 10800)},
             },
             "antigravity_quota_summary": {
@@ -189,8 +189,8 @@ class NormalizationTests(unittest.TestCase):
         split = {r["name"]: r for r in quota.split_antigravity_rows(row)}
         self.assertEqual(split["Gemini · 4 Argon"]["used_pct"], 3)
         self.assertNotIn("fiveh_pct", split["Gemini · 4 Argon"])
-        self.assertEqual(split["Gemini · 3.8 Flash"]["used_pct"], 13.9)
-        self.assertEqual(split["Gemini · 3.8 Flash"]["fiveh_pct"], 23.0)
+        self.assertEqual(split["Gemini 4 Hydrogen"]["used_pct"], 13.9)
+        self.assertEqual(split["Gemini 4 Hydrogen"]["fiveh_pct"], 23.0)
         self.assertEqual(split["Gemini · Claude"]["used_pct"], 87.2)
         self.assertEqual(split["Gemini · Claude"]["fiveh_pct"], 100.0)
 
