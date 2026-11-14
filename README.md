@@ -95,7 +95,7 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 | Antigravity（Gemini 组） | Sub2API 分模型额度，辅以 `agy /usage` 补全 Gemini / Claude 组周额度 |
 | 非 AI 服务（如 ikuuu） | 从私有财务记录读取到期日期并纳入订阅页与概览紧急提醒 |
 
-当前线上快照覆盖 9 个账号：Kimi ×2、Codex ×3、MiniMax ×1、Antigravity ×3。Grok、豆包 DOM 采集和旧本机 CLI 采集器已下线移除，历史底账中的旧记录在展示层过滤。
+当前线上快照覆盖 9 个账号：Kimi ×2、Codex ×3、MiniMax ×1、Antigravity ×3。豆包 DOM 采集和旧本机 CLI 采集器已下线移除，历史底账中的旧记录在展示层过滤。
 
 ## 定时自动跑（macOS launchd）
 

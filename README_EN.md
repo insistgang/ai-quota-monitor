@@ -95,7 +95,7 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 | Antigravity (Gemini group) | Per-model Sub2API quota, completed with `agy /usage` for the Gemini / Claude weekly windows |
 | Non-AI services (such as `ikuuu`) | Expiry dates read from the private finance notes, surfaced on the subscriptions page and in urgent reminders |
 
-The current live snapshot covers 9 accounts: Kimi ×2, Codex ×3, MiniMax ×1, Antigravity ×3. The Grok collector, the Doubao DOM collector and the old local CLI collectors have been removed; their history stays in the local ledger and is filtered out at display time.
+The current live snapshot covers 9 accounts: Kimi ×2, Codex ×3, MiniMax ×1, Antigravity ×3. The Doubao DOM collector and the old local CLI collectors have been removed; their history stays in the local ledger and is filtered out at display time.
 
 ## Scheduling on macOS (launchd)
 
