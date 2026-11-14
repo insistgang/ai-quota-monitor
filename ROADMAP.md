@@ -9,6 +9,8 @@
 
 ## 最近完成
 
+- 2026-11-15 06:23 重拍 README 三张页面截图：由 1280×900 视口截图改为整页截图，额度概览从缺 6 张卡片变为完整页面（含 KPI 条、快刷新提醒、9 张卡片与最近两日消耗），每日消耗与订阅账单同样改为整页；为符合公众号图片不超过 2000px 的约束，概览缩放为 1421×2000、订阅账单 1145×2000、每日消耗保持 1440×1799，均为 82 质量 JPEG。
+
 - 2026-11-15 06:14 从私有财务笔记移除 Grok 记录并重新发布：删除订阅表 Grok 行、2026-08-27 的 217.50 元算力充值台账行、两处散文提及与一个 2026-11-02 前关注 SuperGrok 到期的待办；随后执行 `./publish.sh`，生成 06:13 快照（9 个账号）并推送提交 `bbf6925`，GitHub Pages 已构建，线上三页与本地发布产物逐字一致。
 
 - 2026-11-15 06:12 从对外文案中移除 Grok：GitHub 仓库简介改为「Kimi/Codex/MiniMax/Antigravity」，README 中英文版与 `docs/project-design.md` 同步删除 Grok 提及。采集端自 2026-11-03 已无 Grok 取数代码（`sub2api_quota.py`、服务器侧快照脚本、发布流程与私有映射 `sub2api.json` 7 个账号均无 Grok）；保留 `quota_report.py` 的展示层名称过滤与其回归测试，避免历史底账中的停用账号重新出现在公开页。
@@ -40,6 +42,8 @@
 - 2026-10-04 03:52 修复本地看板显示完整邮箱的问题，同时覆盖提醒、备注、异常、历史记录、筛选项和订阅账单；现有本地快照已打码，额度数值和采集时间未改变。
 
 ## 最近验证
+
+- 2026-11-15 06:23 三张截图由 Playwright 对线上 https://insistgang.top/ai-quota-monitor/ 三个页面以 1440×900 视口、`--full-page` 整页拍摄，逐张人工查看确认内容完整、邮箱已打码、页面无 Grok 字样；像素尺寸用 JPEG SOF 标记解析复核，最大边均不超过 2000px；`validate_readme_pair.py`：PASS。
 
 - 2026-11-15 06:14 线上 https://insistgang.top/ai-quota-monitor/ 三页实测 Grok 命中均为 0；`docs/index.html`、`docs/history.html`、`docs/subscriptions.html` 与线上响应逐字一致（`cmp`），页面生成时间为 2026-11-15 06:13；订阅页消费台账由 25 笔变为 24 笔，历史消费台账 KPI 同步为 24 笔。发布前已备份财务笔记到 `.tmp/finance-note-grok-removal/`，笔记所在 `~/Documents/knowledge` 为 git 仓库可回滚。
 

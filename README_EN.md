@@ -45,7 +45,7 @@ Three tabs answer three different questions: which account needs attention now, 
 
 ### Quota overview
 
-![Quota overview: source counters, refresh notice and per-account quota cards](docs/assets/dashboard-overview.jpg)
+![Full-page quota overview: source counters, refresh notice, all nine account cards and the last two days of spend](docs/assets/dashboard-overview.jpg)
 
 Cards are ordered by remaining weekly quota, so the account that needs action comes first. The main percentage is the weekly usage the vendor actually reported; the 5-hour window is shown separately and never mixed into the weekly number. An unknown weekly window shows `—` instead of a fake 0%.
 
@@ -57,7 +57,7 @@ A normal day is the last snapshot of today minus the last snapshot of yesterday.
 
 ### Subscriptions and billing
 
-![Subscriptions: monthly average cost, expiry reminders and active subscriptions](docs/assets/subscriptions.jpg)
+![Full-page subscriptions: monthly average cost, expiry reminders, active subscriptions and the spend ledger](docs/assets/subscriptions.jpg)
 
 Non-AI renewals are tracked next to AI subscriptions (for example `ikuuu`). ChatGPT prepaid balance is shown as of the date it was checked manually, and a future deduction stays a plan — it is never booked as spend that already happened.
 
