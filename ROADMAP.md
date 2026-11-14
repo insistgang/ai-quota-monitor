@@ -9,6 +9,8 @@
 
 ## 最近完成
 
+- 2026-11-15 06:14 从私有财务笔记移除 Grok 记录并重新发布：删除订阅表 Grok 行、2026-08-27 的 217.50 元算力充值台账行、两处散文提及与一个 2026-11-02 前关注 SuperGrok 到期的待办；随后执行 `./publish.sh`，生成 06:13 快照（9 个账号）并推送提交 `bbf6925`，GitHub Pages 已构建，线上三页与本地发布产物逐字一致。
+
 - 2026-11-15 06:12 从对外文案中移除 Grok：GitHub 仓库简介改为「Kimi/Codex/MiniMax/Antigravity」，README 中英文版与 `docs/project-design.md` 同步删除 Grok 提及。采集端自 2026-11-03 已无 Grok 取数代码（`sub2api_quota.py`、服务器侧快照脚本、发布流程与私有映射 `sub2api.json` 7 个账号均无 Grok）；保留 `quota_report.py` 的展示层名称过滤与其回归测试，避免历史底账中的停用账号重新出现在公开页。
 
 - 2026-11-15 06:02 重写 README：新增英文版 `README_EN.md` 并与中文版顶部互链（共用 `README_SYNC` 标记），首屏补 Star 引导与 Stars／Python／License／Issues／Last Commit 徽章，正文重排为「是什么 → 不用它做什么 → 线上看板 → 快速开始 → 数据源 → 定时 → 隐私 → 口径 → 结构」；修正过期口径（当前 9 个账号、117 项测试、纯标准库、9:30–23:30 共 15 次），补项目结构树与本地测试说明；新增仓库 `LICENSE`（MIT 官方原文），使 README 声明与仓库实际一致。
@@ -38,6 +40,8 @@
 - 2026-10-04 03:52 修复本地看板显示完整邮箱的问题，同时覆盖提醒、备注、异常、历史记录、筛选项和订阅账单；现有本地快照已打码，额度数值和采集时间未改变。
 
 ## 最近验证
+
+- 2026-11-15 06:14 线上 https://insistgang.top/ai-quota-monitor/ 三页实测 Grok 命中均为 0；`docs/index.html`、`docs/history.html`、`docs/subscriptions.html` 与线上响应逐字一致（`cmp`），页面生成时间为 2026-11-15 06:13；订阅页消费台账由 25 笔变为 24 笔，历史消费台账 KPI 同步为 24 笔。发布前已备份财务笔记到 `.tmp/finance-note-grok-removal/`，笔记所在 `~/Documents/knowledge` 为 git 仓库可回滚。
 
 - 2026-11-15 06:12 `validate_readme_pair.py --primary README.md --secondary README_EN.md`：PASS；`python3 -B -m unittest discover -s tests`：117 项通过；`git grep -i grok` 在 README.md、README_EN.md、docs/project-design.md 已无命中，采集端四个文件 grep grok 无命中；仓库简介经 `gh api` 复核已更新。代码内剩余 Grok 字样仅三处：展示层名称过滤、订阅页图标映射与对应回归测试，均有保留理由。
 
