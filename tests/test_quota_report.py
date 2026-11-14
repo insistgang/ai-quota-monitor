@@ -1,7 +1,6 @@
 import csv
 import datetime as dt
 import json
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,10 +13,7 @@ CSV_HEADER = ["ts", "name", "status", "used_pct", "used_text", "reset", "fiveh_t
 
 
 def setUpModule():
-    global _public_filter_test_dir, _public_filter_patch, _local_source_patch
-    # These fixtures exercise the legacy collectors, independent of private live config.
-    _local_source_patch = mock.patch.dict(quota_report.os.environ, {"QUOTA_SOURCE": "local"})
-    _local_source_patch.start()
+    global _public_filter_test_dir, _public_filter_patch
     _public_filter_test_dir = tempfile.TemporaryDirectory()
     config = Path(_public_filter_test_dir.name) / "public-hidden-accounts.json"
     config.write_text(json.dumps({"codex_emails": ["test@example.invalid"]}), encoding="utf-8")
@@ -26,302 +22,11 @@ def setUpModule():
 
 
 def tearDownModule():
-    _local_source_patch.stop()
     _public_filter_patch.stop()
     _public_filter_test_dir.cleanup()
 
 
-class DoubaoDomTests(unittest.TestCase):
-    DOM_TEXT = """
-账号昵称不应进入缓存
-标准套餐
-订阅与额度管理免费体验至9月16日
-升级至标准套餐
-购买创作额度包
-当前时段
-已用 <1%
-2 小时 24 分钟后重置
-近 7 天
-已用 7%
-8月24日 21:55 重置
-订阅记录
-"""
-
-    def test_parse_visible_dom_extracts_weekly_and_current_windows(self):
-        captured = dt.datetime(
-            2026, 8, 21, 16, 40,
-            tzinfo=dt.timezone(dt.timedelta(hours=8)),
-        )
-
-        row = quota_report._parse_doubao_dom(self.DOM_TEXT, captured)
-
-        self.assertEqual(row["name"], "豆包 · 标准套餐")
-        self.assertEqual(row["used_pct"], 7.0)
-        self.assertEqual(row["used_text"], "7%")
-        self.assertEqual(row["reset"], "08-24 21:55")
-        self.assertEqual(row["fiveh_pct"], 1.0)
-        self.assertEqual(row["fiveh_text"], "<1%")
-        self.assertEqual(row["fiveh_reset"], "08-21 19:04")
-        self.assertEqual(row["fiveh_label"], "当前时段")
-        self.assertIn("免费体验至9月16日", row["note"])
-
-    def test_parse_visible_dom_treats_used_up_window_as_fully_used(self):
-        captured = dt.datetime(
-            2026, 8, 21, 23, 35,
-            tzinfo=dt.timezone(dt.timedelta(hours=8)),
-        )
-        dom_text = self.DOM_TEXT.replace("已用 <1%", "已用完").replace(
-            "2 小时 24 分钟后重置",
-            "47 分钟后重置",
-        )
-
-        row = quota_report._parse_doubao_dom(dom_text, captured)
-
-        self.assertEqual(row["fiveh_pct"], 100.0)
-        self.assertEqual(row["fiveh_text"], "100%")
-        self.assertEqual(row["fiveh_reset"], "08-22 00:22")
-
-    def test_parse_visible_dom_treats_not_consumed_window_as_zero(self):
-        captured = dt.datetime(
-            2026, 8, 22, 15, 49,
-            tzinfo=dt.timezone(dt.timedelta(hours=8)),
-        )
-        dom_text = self.DOM_TEXT.replace("已用 <1%", "未消耗").replace(
-            "2 小时 24 分钟后重置",
-            "开始使用后计时",
-        )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            cache_path = Path(tmp) / "doubao-quota.json"
-            snapshot = quota_report._import_doubao_dom(
-                dom_text,
-                cache_path,
-                captured,
-            )
-            cached = quota_report._read_doubao_snapshot(cache_path)
-
-        row = snapshot["row"]
-        self.assertEqual(row["fiveh_pct"], 0.0)
-        self.assertEqual(row["fiveh_text"], "0%")
-        self.assertEqual(row["fiveh_reset"], "开始使用后计时")
-        self.assertIsNotNone(cached)
-
-    def test_import_cache_contains_only_normalized_quota_fields(self):
-        captured = dt.datetime(
-            2026, 8, 21, 16, 40,
-            tzinfo=dt.timezone(dt.timedelta(hours=8)),
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            cache_path = Path(tmp) / "doubao-quota.json"
-
-            quota_report._import_doubao_dom(self.DOM_TEXT, cache_path, captured)
-            payload = json.loads(cache_path.read_text(encoding="utf-8"))
-
-            self.assertEqual(payload["source_url"], quota_report.DOUBAO_QUOTA_URL)
-            self.assertEqual(payload["row"]["used_pct"], 7.0)
-            self.assertNotIn("账号昵称", cache_path.read_text(encoding="utf-8"))
-            self.assertEqual(cache_path.stat().st_mode & 0o777, 0o600)
-
-    def test_stale_cache_remains_visible_but_does_not_look_live(self):
-        captured = dt.datetime(
-            2026, 8, 21, 8, 0,
-            tzinfo=dt.timezone(dt.timedelta(hours=8)),
-        )
-        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT, captured)
-        now = captured + dt.timedelta(hours=7)
-
-        with mock.patch.object(quota_report, "_doubao_max_age_hours", return_value=6):
-            row = quota_report._doubao_row_from_snapshot(snapshot, now)
-
-        self.assertTrue(row["stale"])
-        self.assertIn("缓存 08-21 08:00", row["note"])
-        self.assertIn("过期7小时", row["note"])
-        self.assertNotIn("豆包官网可见 DOM", row["note"])
-        self.assertEqual(quota_report._alerts([row]), [])
-        self.assertIn("快照过期", quota_report._card(row))
-
-    def test_parser_rejects_non_quota_page_text(self):
-        with self.assertRaisesRegex(ValueError, "当前时段/近 7 天"):
-            quota_report._parse_doubao_dom("豆包聊天页")
-
-    def test_account_name_ending_in_package_is_not_used_as_plan(self):
-        dom_text = self.DOM_TEXT.replace(
-            "账号昵称不应进入缓存\n标准套餐",
-            "隐私昵称套餐\n订阅与额度管理免费体验至1月1日\n其他导航文字\n标准套餐",
-        )
-
-        row = quota_report._parse_doubao_dom(dom_text)
-
-        self.assertEqual(row["name"], "豆包 · 标准套餐")
-        self.assertNotIn("隐私昵称", json.dumps(row, ensure_ascii=False))
-        self.assertIn("免费体验至9月16日", row["note"])
-        self.assertNotIn("免费体验至1月1日", row["note"])
-
-    def test_parser_rejects_percentage_above_one_hundred(self):
-        dom_text = self.DOM_TEXT.replace("已用 7%", "已用 120%")
-
-        with self.assertRaisesRegex(ValueError, "百分比超出范围"):
-            quota_report._parse_doubao_dom(dom_text)
-
-    def test_parser_rejects_invalid_absolute_reset_date(self):
-        dom_text = self.DOM_TEXT.replace(
-            "8月24日 21:55 重置",
-            "13月40日 99:99 重置",
-        )
-
-        with self.assertRaisesRegex(ValueError, "重置时间非法"):
-            quota_report._parse_doubao_dom(dom_text)
-
-    def test_parser_rejects_unbounded_relative_reset_date(self):
-        dom_text = self.DOM_TEXT.replace(
-            "2 小时 24 分钟后重置",
-            f"{10 ** 50} 天后重置",
-        )
-
-        with self.assertRaisesRegex(ValueError, "重置时间非法"):
-            quota_report._parse_doubao_dom(dom_text)
-
-    def test_cache_reader_rejects_out_of_range_normalized_values(self):
-        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT)
-        snapshot["row"]["used_pct"] = 120.0
-        with tempfile.TemporaryDirectory() as tmp:
-            cache_path = Path(tmp) / "doubao-quota.json"
-            cache_path.write_text(json.dumps(snapshot), encoding="utf-8")
-
-            self.assertIsNone(quota_report._read_doubao_snapshot(cache_path))
-
-    def test_chrome_reader_requests_a_page_refresh_before_reading_dom(self):
-        def fake_run(command, **kwargs):
-            if command[0] == "pgrep":
-                return subprocess.CompletedProcess(command, 0, stdout="123\n", stderr="")
-            if command[-1] == "refresh":
-                return subprocess.CompletedProcess(
-                    command, 0, stdout=self.DOM_TEXT, stderr="",
-                )
-            return subprocess.CompletedProcess(
-                command, 1, stdout="", stderr="refresh mode missing",
-            )
-
-        with mock.patch.object(quota_report.subprocess, "run", side_effect=fake_run):
-            text = quota_report._read_doubao_chrome_dom()
-
-        self.assertIn("近 7 天", text)
-
-    def test_applescript_refreshes_the_matching_tab_and_waits_for_quota_dom(self):
-        source = quota_report.DOUBAO_APPLESCRIPT.read_text(encoding="utf-8")
-
-        self.assertIn("reload chromeTab", source)
-        self.assertIn("repeat with attempt", source)
-        self.assertLess(
-            source.index("reload chromeTab"),
-            source.index("execute chromeTab javascript jsCode"),
-        )
-
-    def test_chrome_reader_recognizes_chinese_javascript_permission_error(self):
-        permission_error = (
-            "通过 AppleScript 执行 JavaScript 的功能已关闭。"
-            "请允许 Apple 事件中的 JavaScript。"
-        )
-        results = [
-            subprocess.CompletedProcess(["pgrep"], 0, stdout="123\n", stderr=""),
-            subprocess.CompletedProcess(
-                ["osascript"], 1, stdout="", stderr=permission_error,
-            ),
-        ]
-
-        with mock.patch.object(quota_report.subprocess, "run", side_effect=results):
-            with self.assertRaisesRegex(RuntimeError, "未允许来自 Apple 事件"):
-                quota_report._read_doubao_chrome_dom()
-
-    def test_live_refresh_failure_marks_cache_as_non_realtime(self):
-        captured = dt.datetime.now().astimezone() - dt.timedelta(minutes=5)
-        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT, captured)
-
-        with (
-            mock.patch.object(
-                quota_report,
-                "_sync_doubao_chrome",
-                side_effect=RuntimeError("Chrome 中未打开豆包额度管理页"),
-            ),
-            mock.patch.object(quota_report, "_read_doubao_snapshot", return_value=snapshot),
-        ):
-            row = quota_report._doubao_quota()
-
-        self.assertTrue(row["stale"])
-        self.assertIn("缓存 ", row["note"])
-        self.assertIn("未开额度页", row["note"])
-        self.assertNotIn("实时刷新失败", row["note"])
-        self.assertNotIn("Chrome 中未打开豆包额度管理页", row["note"])
-        self.assertNotIn("豆包官网可见 DOM", row["note"])
-        self.assertIn(
-            "<span class='pill stale'>使用缓存</span>",
-            quota_report._card(row),
-        )
-
-    def test_cache_fallback_note_stays_compact(self):
-        captured = dt.datetime(
-            2026, 8, 22, 23, 30,
-            tzinfo=dt.timezone(dt.timedelta(hours=8)),
-        )
-        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT, captured)
-        now = captured + dt.timedelta(hours=14, minutes=18)
-
-        row = quota_report._doubao_row_from_snapshot(
-            snapshot,
-            now,
-            cache_fallback=True,
-            sync_error="Chrome 中未打开豆包额度管理页",
-        )
-
-        self.assertEqual(
-            row["note"],
-            "免费体验至9月16日 · 缓存 08-22 23:30 · 过期14小时 · 未开额度页",
-        )
-
-    def test_old_cache_note_drops_implementation_prefix(self):
-        captured = dt.datetime(
-            2026, 8, 22, 23, 30,
-            tzinfo=dt.timezone(dt.timedelta(hours=8)),
-        )
-        snapshot = quota_report._doubao_snapshot(self.DOM_TEXT, captured)
-        snapshot["row"]["note"] = (
-            "豆包官网可见 DOM · 免费体验至9月16日 · 采集于 08-22 23:30"
-        )
-
-        row = quota_report._doubao_row_from_snapshot(
-            snapshot,
-            captured + dt.timedelta(hours=14, minutes=18),
-            cache_fallback=True,
-            sync_error="Chrome 中未打开豆包额度管理页",
-        )
-
-        self.assertEqual(
-            row["note"],
-            "免费体验至9月16日 · 缓存 08-22 23:30 · 过期14小时 · 未开额度页",
-        )
-
-
 class AntigravityQuotaTests(unittest.TestCase):
-    def test_claude_gpt_group_is_no_longer_collected(self):
-        panel = """
-CLAUDE AND GPT MODELS
-  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
-
-  Weekly Limit Remaining
-    [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0.00%
-    Refreshes in 21h 11m
-
-  Five Hour Limit Remaining
-    Disabled: You have hit your weekly limit, the 5-hour limit does not currently apply.
-"""
-
-        with mock.patch.object(quota_report, "_tmux_slash_probe", return_value=panel):
-            rows = quota_report._agy()
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["name"], "Antigravity · Gemini 组")
-        self.assertEqual(rows[0]["status"], "面板解析失败")
-
     def test_claude_gpt_group_is_hidden_from_history(self):
         rows = [
             {"name": "Antigravity · Claude/GPT 组", "status": "ok", "used_pct": 6.0},
@@ -331,31 +36,6 @@ CLAUDE AND GPT MODELS
         names = [r["name"] for r in quota_report._visible_quota_rows(rows)]
 
         self.assertEqual(names, ["Antigravity · Gemini 组"])
-
-    def test_only_gemini_group_is_collected(self):
-        panel = """
-GEMINI MODELS
-  Models within this group: Gemini Pro, Gemini Flash
-
-  Weekly Limit Remaining
-    31.18%
-    Refreshes in 96h 11m
-
-CLAUDE AND GPT MODELS
-  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
-
-  Weekly Limit Remaining
-    93.87%
-    Refreshes in 21h 11m
-"""
-
-        with mock.patch.object(quota_report, "_tmux_slash_probe", return_value=panel):
-            rows = quota_report._agy()
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["name"], "Antigravity · Gemini 组")
-        self.assertEqual(rows[0]["status"], "ok")
-        self.assertEqual(rows[0]["used_pct"], 68.8)
 
     def test_enrich_antigravity_rows_promotes_flash_and_claude_to_dual_windows(self):
         panel = """
@@ -397,41 +77,6 @@ GEMINI MODELS
 
 
 class CollectionRetryTests(unittest.TestCase):
-    def test_retries_only_failed_or_cached_source_batches(self):
-        calls = {"stable": 0, "failed": 0, "cached": 0}
-
-        def stable():
-            calls["stable"] += 1
-            return [{"name": "稳定来源", "status": "ok"}]
-
-        def failed_then_ok():
-            calls["failed"] += 1
-            if calls["failed"] == 1:
-                return [{"name": "瞬时失败来源", "status": "查询失败"}]
-            return [{"name": "瞬时失败来源", "status": "ok"}]
-
-        def cached_then_fresh():
-            calls["cached"] += 1
-            if calls["cached"] == 1:
-                return [{"name": "缓存来源", "status": "ok", "stale": True}]
-            return [{"name": "缓存来源", "status": "ok", "stale": False}]
-
-        with mock.patch.object(quota_report.time, "sleep") as sleep:
-            rows = quota_report._collect_batches_with_retries(
-                [
-                    ("stable", stable),
-                    ("failed", failed_then_ok),
-                    ("cached", cached_then_fresh),
-                ],
-                retry_attempts=2,
-                retry_delay=15,
-            )
-
-        self.assertEqual([row["status"] for row in rows], ["ok", "ok", "ok"])
-        self.assertFalse(rows[2]["stale"])
-        self.assertEqual(calls, {"stable": 1, "failed": 2, "cached": 2})
-        sleep.assert_called_once_with(15)
-
     def test_publish_health_gate_stops_before_writing_multiple_failures(self):
         rows = [
             {"name": "网络来源", "status": "查询失败"},
@@ -1195,55 +840,10 @@ class PageSplitTests(unittest.TestCase):
         self.assertNotIn("每日消耗（周计数口径）", subscriptions)
 
 
-class CodexRowTests(unittest.TestCase):
-    def test_row_uses_window_minutes_not_primary_name(self):
-        now = int(dt.datetime.now().timestamp())
-        rl = {
-            "primary": {"used_percent": 94.0, "window_minutes": 300, "resets_at": now + 3600},
-            "secondary": {"used_percent": 30.0, "window_minutes": 10080, "resets_at": now + 7 * 86400},
-            "plan_type": "plus",
-        }
-        row = quota_report._codex_row("Codex · Win", rl)
-        self.assertEqual(row["used_pct"], 30.0)
-        self.assertEqual(row["fiveh_pct"], 94.0)
-        self.assertNotEqual(row["used_pct"], row["fiveh_pct"])
-
-    def test_five_hour_only_is_not_promoted_to_weekly(self):
-        now = int(dt.datetime.now().timestamp())
-        rl = {
-            "primary": {"used_percent": 99.0, "window_minutes": 300, "resets_at": now + 3600},
-            "secondary": None,
-        }
-        row = quota_report._codex_row("Codex · Win", rl)
-        self.assertIsNone(row["used_pct"])
-        self.assertEqual(row["used_text"], "周窗未知")
-        self.assertEqual(row["fiveh_pct"], 99.0)
-
-    def test_expired_five_hour_window_is_dropped(self):
-        now = int(dt.datetime.now().timestamp())
-        rl = {
-            "primary": {"used_percent": 48.0, "window_minutes": 300, "resets_at": now - 3600},
-            "secondary": {"used_percent": 30.0, "window_minutes": 10080, "resets_at": now + 86400},
-        }
-        row = quota_report._codex_row("Codex · Mac", rl)
-        self.assertEqual(row["used_pct"], 30.0)
-        self.assertNotIn("fiveh_pct", row)
-
-
 class SnapshotFreshnessTests(unittest.TestCase):
-    def test_old_or_unverifiable_snapshot_is_not_healthy(self):
-        now = dt.datetime.now(dt.timezone.utc)
-        for timestamp in ((now - dt.timedelta(days=3)).isoformat(),
-                          (now + dt.timedelta(hours=1)).isoformat(),
-                          "invalid"):
-            with self.subTest(timestamp=timestamp):
-                self.assertTrue(quota_report._snapshot_stale(timestamp))
-                row = {"name": "MiniMax", "status": "ok", "stale": True}
-                self.assertEqual(quota_report._unhealthy_rows([row]), [row])
-
-    def test_recent_snapshot_remains_healthy(self):
-        now = dt.datetime.now(dt.timezone.utc)
-        self.assertFalse(quota_report._snapshot_stale(now.isoformat()))
+    def test_stale_row_is_counted_as_unhealthy(self):
+        row = {"name": "MiniMax", "status": "ok", "stale": True}
+        self.assertEqual(quota_report._unhealthy_rows([row]), [row])
 
     def test_cached_snapshot_is_not_logged_as_a_new_success(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1263,120 +863,7 @@ class SnapshotFreshnessTests(unittest.TestCase):
         self.assertIn("使用缓存", quota_report._card(row))
 
 
-class CodexAuthTests(unittest.TestCase):
-    def _payload(self):
-        now = int(dt.datetime.now().timestamp())
-        return {
-            "schema_version": 1,
-            "accounts": [
-                {
-                    "number": 1,
-                    "email": "first@163.com",
-                    "plan": "plus",
-                    "active": False,
-                    "usage": {
-                        "source": "api",
-                        "updated_at": now - 60,
-                        "primary": {"used_percent": 100, "window_minutes": 300,
-                                    "resets_at": now + 3600},
-                        "secondary": {"used_percent": 16, "window_minutes": 10080,
-                                      "resets_at": now + 6 * 86400},
-                        "refresh": {"status": "ok", "error_code": None},
-                    },
-                },
-                {
-                    "number": 2,
-                    "email": "second@hotmail.com",
-                    "plan": "plus",
-                    "active": True,
-                    "usage": {
-                        "source": "api",
-                        "updated_at": now,
-                        "primary": {"used_percent": 8, "window_minutes": 300,
-                                    "resets_at": now + 7200},
-                        "secondary": {"used_percent": 17, "window_minutes": 10080,
-                                      "resets_at": now + 5 * 86400},
-                        "refresh": {"status": "ok", "error_code": None},
-                    },
-                },
-                {
-                    "number": 3,
-                    "email": "third@163.com",
-                    "plan": "plus",
-                    "active": False,
-                    "usage": {
-                        "source": "cache",
-                        "primary": None,
-                        "secondary": None,
-                        "refresh": {"status": "error", "error_code": "unauthorized"},
-                    },
-                },
-            ],
-        }
-
-    def _run(self, payload, returncode=0):
-        return subprocess.CompletedProcess(
-            ["codex-auth", "list", "--json"], returncode,
-            stdout=json.dumps(payload).encode(), stderr=b"",
-        )
-
-    def test_parses_every_account_with_windows_and_notes(self):
-        with mock.patch.object(quota_report.shutil, "which", return_value="codex-auth"), \
-             mock.patch.object(quota_report.subprocess, "run",
-                               return_value=self._run(self._payload())):
-            rows = quota_report._codex_auth_accounts()
-
-        self.assertEqual(len(rows), 3)
-        first, second, third = rows
-        self.assertEqual(first["name"], "Codex · first@163.com")
-        self.assertEqual(first["status"], "ok")
-        self.assertEqual(first["used_pct"], 16)
-        self.assertEqual(first["fiveh_pct"], 100)
-        self.assertIn("Plus", first["note"])
-        self.assertNotIn("当前活跃", first["note"])
-        self.assertEqual(second["used_pct"], 17)
-        self.assertEqual(second["fiveh_pct"], 8)
-        self.assertIn("当前活跃", second["note"])
-        self.assertEqual(third["name"], "Codex · third@163.com")
-        self.assertEqual(third["status"], "unauthorized")
-
-    def test_cli_failure_returns_single_error_row(self):
-        with mock.patch.object(quota_report.shutil, "which", return_value="codex-auth"), \
-             mock.patch.object(quota_report.subprocess, "run",
-                               return_value=self._run({}, returncode=1)):
-            rows = quota_report._codex_auth_accounts()
-
-        self.assertEqual(len(rows), 1)
-        self.assertNotEqual(rows[0]["status"], "ok")
-
-    def test_refresh_failure_with_cached_windows_is_retried(self):
-        failed = self._payload()
-        failed["accounts"] = failed["accounts"][:1]
-        failed["accounts"][0]["usage"]["refresh"] = {"status": "error"}
-        fresh = self._payload()
-        fresh["accounts"] = fresh["accounts"][:1]
-        fresh["accounts"][0]["usage"]["secondary"]["used_percent"] = 21
-        with mock.patch.object(quota_report.shutil, "which", return_value="codex-auth"), \
-             mock.patch.object(quota_report.subprocess, "run", side_effect=[
-                 self._run(failed), self._run(fresh),
-             ]):
-            rows = quota_report._collect_batches_with_retries(
-                [("codex", quota_report._codex_auth_accounts)], retry_attempts=1,
-            )
-        self.assertEqual(rows[0]["used_pct"], 21)
-        self.assertFalse(rows[0].get("stale"))
-
-    def test_old_usage_is_marked_stale_even_if_refresh_says_ok(self):
-        data = self._payload()
-        data["accounts"] = data["accounts"][:1]
-        data["accounts"][0]["usage"]["updated_at"] -= 3 * 3600
-        with mock.patch.object(quota_report.shutil, "which", return_value="codex-auth"), \
-             mock.patch.object(quota_report.subprocess, "run", return_value=self._run(data)):
-            row = quota_report._codex_auth_accounts()[0]
-        self.assertTrue(row.get("stale"))
-        self.assertEqual(quota_report._unhealthy_rows([row]), [row])
-        self.assertIn("过期", quota_report._card(row))
-
+class PublicOverviewEmailTests(unittest.TestCase):
     def test_public_page_masks_account_emails(self):
         rows = [{
             "name": "Codex · first@163.com",
@@ -1466,24 +953,173 @@ class QuotaVisibilityTests(unittest.TestCase):
 
 
 class CollectSourceTests(unittest.TestCase):
-    def test_collect_includes_codex_auth_accounts(self):
-        def row(label):
-            return {"name": label, "status": "ok"}
-        with mock.patch.object(quota_report, "_load_kimi_keys", return_value=(None, None)), \
-             mock.patch.object(quota_report, "_kimi_quota", side_effect=lambda label, key: row(label)), \
-             mock.patch.object(quota_report, "_doubao_quota", return_value=row("豆包")), \
-             mock.patch.object(quota_report, "_codex_auth_accounts",
-                               return_value=[row("Codex · first@163.com"),
-                                             row("Codex · second@hotmail.com")]), \
-             mock.patch.object(quota_report, "_minimax", return_value=row("MiniMax")), \
-             mock.patch.object(quota_report, "_agy", return_value=[row("Antigravity · Gemini 组")]):
+    def test_collect_requires_sub2api_config(self):
+        with mock.patch.object(quota_report.sub2api_quota, "load_config", return_value=None):
+            with self.assertRaises(quota_report.sub2api_quota.ConfigError):
+                quota_report.collect()
+
+    def test_collect_runs_sub2api_enrichment_and_hides_retired_rows(self):
+        cfg = {"accounts": [{"id": 5, "platform": "minimax", "collector": "minimax", "name": "MiniMax"}]}
+        rows = [
+            {"name": "MiniMax", "status": "ok"},
+            {"name": "豆包 · 个人会员", "status": "ok"},
+        ]
+        with mock.patch.object(quota_report.sub2api_quota, "load_config", return_value=cfg), \
+             mock.patch.object(quota_report.sub2api_quota, "collect", return_value=rows):
             names = [r["name"] for r in quota_report.collect()]
 
-        self.assertIn("Codex · first@163.com", names)
-        self.assertIn("Codex · second@hotmail.com", names)
-        self.assertIn("MiniMax", names)
-        self.assertNotIn("豆包", names)
-        self.assertEqual(len(names), 6)
+        self.assertEqual(names, ["MiniMax"])
+
+
+class AuditBugFixTests(unittest.TestCase):
+    def test_fiveh_only_source_is_not_treated_as_weekly_quota_or_weekly_exhausted(self):
+        now = dt.datetime.now()
+        rows = [
+            {
+                "name": "Codex · test@example.com",
+                "status": "ok",
+                "used_pct": 20.0,
+                "used_text": "20%",
+                "reset": (now + dt.timedelta(days=5)).strftime("%m-%d %H:%M"),
+            },
+            {
+                "name": "MiniMax",
+                "status": "ok",
+                "used_pct": None,
+                "used_text": "未提供",
+                "reset": "?",
+                "fiveh_pct": 85.0,
+                "fiveh_text": "85%",
+                "fiveh_reset": (now + dt.timedelta(hours=1)).strftime("%m-%d %H:%M"),
+            },
+            {
+                "name": "MiniMax Full",
+                "status": "ok",
+                "used_pct": None,
+                "used_text": "未提供",
+                "reset": "?",
+                "fiveh_pct": 100.0,
+                "fiveh_text": "100%",
+                "fiveh_reset": (now + dt.timedelta(hours=2)).strftime("%m-%d %H:%M"),
+            },
+        ]
+        alerts = quota_report._alerts(rows)
+        self.assertEqual([a["name"] for a in alerts], ["MiniMax"])
+        full_card = quota_report._card(rows[2])
+        self.assertIn("5h 已满", full_card)
+        self.assertNotIn("已用完", full_card)
+        near_full_card = quota_report._card({**rows[1], "fiveh_pct": 98.0, "fiveh_text": "98%"})
+        self.assertNotIn("已用完", near_full_card)
+        strip = quota_report._summary_strip_html(rows, alerts)
+        # 平均周剩余仅统计真实有周额度的账号（Codex 剩 80%），不被 MiniMax 5h 剩余稀释
+        self.assertIn('<span class="kpi-label">平均周剩余</span><span class="kpi-val">80%</span>', strip)
+
+    def test_cache_helpers_write_atomically_with_0600_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agy_path = root / "agy-groups.json"
+            last_path = root / "last-good.json"
+            with mock.patch.object(quota_report, "AGY_GROUPS_CACHE", agy_path), \
+                 mock.patch.object(quota_report, "LAST_GOOD_JSON", last_path):
+                quota_report._save_agy_groups_cache({"Gemini · 3.8 Flash": {"used_pct": 1.0}})
+                quota_report._save_last_good([{"name": "MiniMax", "status": "ok", "used_pct": None}])
+            self.assertEqual(agy_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(last_path.stat().st_mode & 0o777, 0o600)
+
+    def test_refresh_state_always_clears_updating_flag_on_unexpected_exception(self):
+        state = {"rows": [{"name": "MiniMax", "status": "ok"}], "updating": True, "last": "2026-11-14T12:00:00"}
+        with mock.patch.object(quota_report, "_STATE", state), \
+             mock.patch.object(quota_report, "collect", side_effect=RuntimeError("boom")):
+            quota_report._refresh_state(log=False)
+        self.assertFalse(state["updating"])
+        self.assertTrue(state["rows"][0]["stale"])
+        self.assertTrue(state["rows"][0]["cache_fallback"])
+
+    def test_history_and_subscriptions_pages_skip_unused_overview_card_rendering(self):
+        rows = [{"name": "MiniMax", "status": "ok", "used_pct": 10.0, "used_text": "10%", "reset": "?"}]
+        with mock.patch.object(quota_report, "_card", side_effect=AssertionError("should skip cards")), \
+             mock.patch.object(quota_report, "_alerts", side_effect=AssertionError("should skip alerts")), \
+             mock.patch.object(quota_report, "_daily_deltas", return_value=[]):
+            html_h = quota_report.render_html(rows, public=True, page="history")
+            html_s = quota_report.render_html(rows, public=True, page="subscriptions")
+        self.assertIn("每日消耗", html_h)
+        self.assertIn("订阅账单", html_s)
+
+    def test_history_controls_include_empty_state_placeholder(self):
+        history = [("2026-11-14", [{"name": "MiniMax", "delta": 5.0, "reset": False, "partial": False}])]
+        with mock.patch.object(quota_report, "_daily_deltas", return_value=history):
+            page = quota_report.render_html([], public=False, page="history")
+        self.assertIn('id="historyEmpty"', page)
+        self.assertIn("emptyBox.hidden=visibleDays>0", page)
+
+    def test_non_ai_includes_ikuuu_with_urgent_expiry_and_kpi_warning(self):
+        finance_text = """## 一、当前在用订阅
+| 产品 | 档位/形式 | 费用 | 计费周期 | 刷新/到期时间 | 状态与证据 |
+|------|----------|------|----------|--------------|-----------|
+| ChatGPT | 月付 | 150 元/月 | 月付 | 每月 2 日 | 确认 |
+
+## 四、月度支出估算
+- **AI 固定订阅合计（本人实付）：约 150 元/月**
+  - 内部明细：不该进入非 AI
+- **非 AI 固定订阅**：
+  - iCloud：21 元/月
+  - ikuuu（科学上网）双账号：**QQ 邮箱账号 2026-11-21 到期**；**网易邮箱账号 2027-06-27 到期**（8/24 好友甲疑似充了三个月）
+- **合并口径**：当前已知固定订阅总额约 **171 元/月**
+"""
+
+        class _FixedDate(quota_report.dt.date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 11, 14)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            finance_path = root / "finance.md"
+            finance_path.write_text(finance_text, encoding="utf-8")
+            cfg_path = root / "finance.json"
+            cfg_path.write_text(json.dumps({
+                "version": 1,
+                "finance_md": str(finance_path),
+                "public_replacements": {"好友甲": "亲友"},
+            }), encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path), \
+                 mock.patch.object(quota_report, "FINANCE_CONFIG_PATH", cfg_path), \
+                 mock.patch.object(quota_report.dt, "date", _FixedDate):
+                html = quota_report._subs_html(public=True)
+
+        self.assertIn("🌐 ikuuu（科学上网）双账号", html)
+        self.assertIn('class="scard nonai-card urgent"', html)
+        self.assertIn("<span class='cd red'>剩 7 天</span>", html)
+        self.assertIn("最近：ikuuu（剩 7 天）", html)
+        self.assertIn("亲友疑似充了三个月", html)
+        self.assertNotIn("好友甲", html)
+        self.assertNotIn("内部明细", html)
+
+    def test_public_replacements_mask_overview_and_history_labels(self):
+        rows = [{
+            "name": "Kimi · 私密代号（199/月）",
+            "status": "ok",
+            "used_pct": 25.0,
+            "used_text": "25%",
+            "reset": "11-16 15:17",
+        }]
+        history = [("2026-11-14", [{"name": "Kimi · 私密代号", "delta": 10.0, "reset": False, "partial": False}])]
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "finance.json"
+            cfg_path.write_text(json.dumps({
+                "version": 1,
+                "public_replacements": {
+                    "Kimi · 私密代号（199/月）": "Kimi · 副账号",
+                    "Kimi · 私密代号": "Kimi · 副账号",
+                },
+            }), encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_CONFIG_PATH", cfg_path), \
+                 mock.patch.object(quota_report, "_daily_deltas", return_value=history):
+                overview = quota_report.render_html(rows, public=True, page="overview")
+                hist_page = quota_report.render_html([], public=True, page="history")
+        for page in (overview, hist_page):
+            self.assertIn("Kimi · 副账号", page)
+            self.assertNotIn("私密代号", page)
 
 
 if __name__ == "__main__":

@@ -31,9 +31,9 @@ OpenAI 单独在服务器读取 Sub2API 当前账号的访问令牌，向官方 
 }
 ```
 
-支持的 collector 为 `codex_auth`、`kimi_mine`、`kimi_shared`、`minimax`、`antigravity`。同一个 Codex collector 可对应多个账号。实际接入时，应先核对服务器账号身份，再复用现有 CSV 中的完整名称；历史仍按名称分组，改名会影响历史曲线的连续性。
+支持的 collector 为 `codex_auth`、`kimi_mine`、`kimi_shared`、`minimax`、`antigravity`。同一个 Codex collector 可对应多个账号。实际接入时，应先核对服务器账号身份，再复用现有 CSV 中的完整名称；历史仍按名称分组，改名会影响历史曲线的连续性，公开页通过 `finance.json` 的 `public_replacements` 映射脱敏名。
 
-未迁入服务器但需保留本地显示的账号放入 `unmapped_accounts`，每项含 `name` 和 `collector`。这些行显示“未接入”，不刷新本机过期令牌；公开过滤名单继续生效。一个 collector 被配置覆盖后，必须列全该来源需要展示的账号。
+已停用账号不再放入配置，公开过滤名单与公开替换规则继续生效。一个 collector 被配置覆盖后，应列全该来源需要展示的账号。
 
 ## 窗口与失败语义
 
@@ -46,16 +46,14 @@ OpenAI 单独在服务器读取 Sub2API 当前账号的访问令牌，向官方 
 - 只重试失败或过期账号，新鲜成功账号不会重复请求。已配置账号读取失败时不静默切回本机 CLI；未被配置覆盖的来源沿用原采集器。
 - 配置损坏时命令行停止写入；实时看板保留旧数据并标为缓存，不更新采集时间或追加历史。
 
-## 使用与回退
+## 使用与配置开关
 
 ```bash
 python3 quota_report.py --json
 python3 quota_report.py --html
-QUOTA_SOURCE=sub2api python3 quota_report.py --json
-QUOTA_SOURCE=local python3 quota_report.py --json
 ```
 
-默认 `auto` 模式在私有配置存在且启用时接入 Sub2API；`sub2api` 模式要求有效配置；`local` 显式使用原本机采集器。也可以把私有配置的 `enabled` 改为 `false`。不要覆盖 CSV、原账号文件或公开过滤名单。
+已完全切换至 Sub2API 数据源，不再保留旧本机采集器回退；若需临时停用采集，可把私有配置的 `enabled` 改为 `false`。不要覆盖 CSV 或公开过滤名单。
 
 本地静态页与公开预览沿用邮箱打码和原有公开授权规则。更换数据源不修改现有 launchd 计划；公开页面继续走原发布流程。
 

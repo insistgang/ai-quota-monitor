@@ -1,4 +1,6 @@
 quota-log.csv
+quota-log.csv.bak*
+*.bak*
 quota-dashboard.html
 launchd.stdout.log
 launchd.stderr.log

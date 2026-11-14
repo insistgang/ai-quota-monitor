@@ -150,9 +150,14 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def read_json(url, headers):
-    """Make one GET with verified TLS, no proxy, no redirect, and bounded body."""
-    request = urllib.request.Request(url, headers=headers, method="GET")
+def _request_json(method, url, headers, *, body_dict=None):
+    """Make one GET or POST request with verified TLS, no proxy, no redirect, and bounded body."""
+    raw_body = None
+    request_headers = headers
+    if body_dict is not None:
+        raw_body = json.dumps(body_dict, separators=(",", ":")).encode("utf-8")
+        request_headers = {**headers, "Content-Type": "application/json"}
+    request = urllib.request.Request(url, data=raw_body, headers=request_headers, method=method)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
@@ -175,30 +180,14 @@ def read_json(url, headers):
         raise RequestFailure("request_failed") from None
 
 
+def read_json(url, headers):
+    """Make one GET with verified TLS, no proxy, no redirect, and bounded body."""
+    return _request_json("GET", url, headers)
+
+
 def _post_json(url, headers, body_dict):
     """Make one bounded POST with verified TLS, no proxy, and no redirect."""
-    raw_body = json.dumps(body_dict, separators=(",", ":")).encode("utf-8")
-    request_headers = {**headers, "Content-Type": "application/json"}
-    request = urllib.request.Request(url, data=raw_body, headers=request_headers, method="POST")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    try:
-        with opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw) > MAX_RESPONSE_BYTES:
-                raise RequestFailure("response_too_large", response.status)
-            try:
-                payload = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                raise RequestFailure("invalid_json", response.status) from None
-            if not isinstance(payload, dict):
-                raise RequestFailure("invalid_json", response.status)
-            return response.status, payload
-    except urllib.error.HTTPError as error:
-        raise RequestFailure("http_error", error.code) from None
-    except RequestFailure:
-        raise
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise RequestFailure("request_failed") from None
+    return _request_json("POST", url, headers, body_dict=body_dict)
 
 
 def sql(query):

@@ -62,7 +62,7 @@ def load_config(path: Path | None = None) -> dict | None:
             names.add(name)
         return data
     except (OSError, ValueError, TypeError, AttributeError):
-        raise ConfigError("Sub2API 监控配置无效，未切回本地账号") from None
+        raise ConfigError("Sub2API 监控配置无效") from None
 
 
 def _epoch(value) -> float | None:

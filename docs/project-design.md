@@ -10,9 +10,9 @@
 
 1. **周额度优先**：主卡片展示供应商实际提供的周已用和剩余比例；没有周窗口时显示未知。
 2. **其他窗口独立展示**：5 小时窗、“当前时段”或模型窗口显示为子进度条，不混入每日周额度消耗。
-3. **不发模型任务**：所有查询都是只读接口、状态命令或官网可见 DOM，不发送提示词。
+3. **不发模型任务**：所有查询都是只读接口或无消耗状态探针（如 `agy /usage`），不发送提示词。
 4. **宁可明确使用缓存，也不伪装实时**：采集失败时保留最后一份有效数字，但停止提醒并标明失败原因。
-5. **公开内容最小化**：只发布用户确认可以公开的额度、账单和汇总；凭据、原始 DOM、本地会话及详细日志不进入仓库。
+5. **公开内容最小化**：只发布经脱敏规则处理后的额度、账单和汇总；凭据、银行/实名、本地会话及详细日志不进入仓库。
 
 ## 2. 端到端数据流
 
@@ -21,18 +21,17 @@ flowchart LR
     A[launchd<br/>09:30–23:30 每小时] --> B[~/.local/bin/quota-publish]
     B --> C[publish_runtime.py]
     C --> D[quota_report.py]
-    D --> S[已配置账号<br/>SSH 到 Sub2API 服务器查询]
-    D --> E1[未覆盖或本机模式<br/>Kimi / MiniMax / Codex 原采集器]
-    D --> E2[未覆盖或本机模式<br/>Antigravity 原采集器]
-    D --> E3[豆包独立 DOM 采集器<br/>沿用既有停用规则]
-    S --> F
-    E1 --> F[统一额度行]
-    E2 --> F
-    E3 --> F
+    D --> S[Sub2API 服务器<br/>SSH 只读查询]
+    D --> A1[Antigravity<br/>agy /usage 补全周窗]
+    D --> N1[finance.json<br/>预存与非AI续费/脱敏]
+    S --> F[统一额度行]
+    A1 --> F
     F --> G[quota-log.csv<br/>本地底账，不入 Git]
     F --> H[docs/index.html]
     F --> I[docs/history.html]
-    F --> J[docs/subscriptions.html]
+    N1 --> H
+    N1 --> I
+    N1 --> J[docs/subscriptions.html]
     H --> K[Git 提交与推送]
     I --> K
     J --> K
@@ -46,16 +45,15 @@ flowchart LR
 | 数据源 | 方式 | 是否产生模型 token | 主要限制 |
 |---|---|---:|---|
 | Kimi for Coding | Sub2API CN 额度接口 | 否 | 配置服务器账号映射；明确区分 5h 与周窗口 |
-| 豆包个人会员 | 保留可见 DOM 采集器，当前工作区未启用 | 否 | 原 Chrome 与权限要求保持不变 |
 | Codex（OpenAI 多账号） | 在服务器读取 Sub2API 当前凭据，GET 官方用量 | 否 | 不调用会触发模型探针或自动重置的管理路径 |
 | MiniMax | Sub2API CN 额度接口 | 否 | 只取本次返回的窗口，缺少周窗口时不补 0% |
-| Antigravity | Sub2API Gemini 文本模型额度 | 否 | 显示最高模型使用率；不当作周消耗 |
+| Antigravity | Sub2API 分模型额度 + `agy /usage` | 否 | 补全 Flash / Claude 组周窗口与刷新时间 |
 
-具体权限、私有配置、只读查询边界与回退方式见 [Sub2API 额度接入](sub2api-quota.md)。未覆盖的来源或显式本机模式继续使用原采集器。
+具体权限、私有配置与只读查询边界见 [Sub2API 额度接入](sub2api-quota.md)。
 
-Grok 已下线，不再采集；历史底账中的 Grok 记录也会在展示层过滤。
+Grok、豆包 DOM 与旧本机 CLI 采集器已下线移除；历史底账中的旧停用账号记录会在展示层过滤。
 
-所有适配器最终输出统一字段：来源名称、状态、周已用百分比、周重置时间，以及可选的短时窗口百分比和重置时间。动态文本进入 HTML 前统一打码邮箱并转义；本地静态看板、实时服务和公开页都执行这一规则，覆盖卡片、提醒、备注、异常信息、历史筛选和订阅账单。打码只影响网页输出，本地底账和 JSON 中的账号标识不变。
+所有适配器最终输出统一字段：来源名称、状态、周已用百分比、周重置时间，以及可选的短时窗口百分比和重置时间。动态文本进入 HTML 前统一打码邮箱、按 `finance.json` 应用 `public_replacements` 公开替换规则并转义；本地静态看板、实时服务和公开页均遵循脱敏隔离规则，本地底账中的账号标识保持连续。
 
 ## 4. 额度与提醒口径
 
@@ -67,7 +65,7 @@ Grok 已下线，不再采集；历史底账中的 Grok 记录也会在展示层
 
 ### 短时窗口
 
-- Codex、Antigravity 等来源可显示 5 小时窗；豆包显示“当前时段”。
+- Codex、Kimi、MiniMax、Antigravity 等来源可显示 5 小时窗。
 - 短时窗口不计入“每日消耗”，否则会把同一使用行为重复计算。
 - Kimi 的使用建议只看周窗口：周刷新还很远时，不因为 5 小时窗即将刷新而提示“抓紧用”。
 - 周额度已用完（剩余 ≤ 3%）时，短时窗口的剩余同样无法使用，不提示“抓紧用”，卡片改显示“已用完”。
@@ -79,41 +77,21 @@ Grok 已下线，不再采集；历史底账中的 Grok 记录也会在展示层
 - 快照中断或缺少自然日时，只从当天第一份可信快照开始计算，避免把数日用量全部记到恢复当天。
 - 同一窗口内偶发的数值回跳视为数据抖动，不伪造一次周重置。
 
-## 5. 豆包自动刷新流程
-
-```mermaid
-sequenceDiagram
-    participant Q as quota_report.py
-    participant C as Chrome 固定标签页
-    participant D as 豆包额度 DOM
-    participant S as 0600 本地缓存
-    Q->>C: 仅匹配固定额度 URL
-    Q->>C: reload 已打开标签页
-    C->>D: 普通网页加载
-    Q->>D: 等待“当前时段/近 7 天”出现
-    D-->>Q: 套餐、百分比、重置时间
-    Q->>Q: 范围、日期、结构和隐私校验
-    Q->>S: 原子写入归一化快照
-    Note over Q,S: 刷新失败时保留缓存，但标记“使用缓存”并停止提醒
-```
-
-这条流程不会新开网页、点击按钮、读取 Cookie、localStorage、Token 或完整 DOM，也不会调用模型。套餐名只接受离额度区最近的“订阅与额度管理”标题相邻字段，避免把账号昵称误当作套餐发布。
-
-## 6. 页面拆分
+## 5. 页面拆分
 
 - `docs/index.html`：额度概览、短时窗口、紧急提醒和最近两天摘要。
 - `docs/history.html`：7/30 天切换、账号筛选和每日消耗。
-- `docs/subscriptions.html`：AI 订阅、历史充值和用户明确允许公开的非 AI 固定支出。
+- `docs/subscriptions.html`：AI 订阅、近期到期 KPI（含 `ikuuu` 等非 AI 续费预警）、历史充值与 ChatGPT 预存计划。
 
-ChatGPT 的预存余额与扣费计划从财务源文件的“ChatGPT 预存余额与扣费计划（私密）”表读取。财务笔记路径和公开脱敏映射通过 `QUOTA_FINANCE_MD` 或本机私有配置 `~/.cache/ai-quota-monitor/finance.json`（权限 `0600`）提供，不写入公开仓库。每条记录包含账号、记录日期、余额、每次扣费、可覆盖的扣费日和下次需补款的扣费日；余额是人工核对的日期快照，未来扣款仅作为计划，不自动记为已发生支出。默认只显示在本地静态看板和实时服务中；用户明确授权公开的条目可填写可选的“公开展示名”列，公开订阅页仅使用该展示名及余额、日期字段，不输出原始账号名。未填写公开展示名的条目仍仅在本地显示。
+ChatGPT 预存余额与非 AI 服务（如 `ikuuu`）到期信息从私有财务笔记读取，笔记路径、授权展示名及 `public_replacements` 公开脱敏规则通过 `QUOTA_FINANCE_MD` 或本机私有配置 `~/.cache/ai-quota-monitor/finance.json`（权限 `0600`）提供，不写入公开仓库。每条预存记录包含账号、记录日期、余额、每次扣费、可覆盖的扣费日和下次需补款的扣费日；余额是人工核对的日期快照，未来扣款仅作为计划，不自动记为已发生支出。默认只显示在本地静态看板和实时服务中；用户明确授权公开的条目可填写可选的“公开展示名”列，公开订阅页仅使用该展示名及余额、日期字段，不输出原始账号名。未填写公开展示名的条目仍仅在本地显示。
 
 ![每日消耗页面](assets/daily-history.jpg)
 
 拆成三个页面是为了避免单页持续增长后难以浏览，也让额度决策、历史分析和账单盘点各自保持清晰。
 
-当前工作区按既有规则停用豆包展示，原采集器与历史文件保留。未付费的 Codex 账号不接入监控：不写入映射、不采集、不出现在终端、看板、历史与公开页中。过滤名单仍按完整账号标识匹配并保留为历史数据兜底，名单位于本机权限为 `0600` 的 `~/.cache/ai-quota-monitor/public-hidden-accounts.json`；缺失或无效时停止生成公开页面。其他来源及授权公开的余额计划继续展示。
+已下线或未付费的账号不再接入监控；公开过滤名单位于本机权限为 `0600` 的 `~/.cache/ai-quota-monitor/public-hidden-accounts.json`；缺失或无效时停止生成公开页面。其他来源、授权公开的余额计划及非 AI 续费服务继续展示。
 
-## 7. 定时、睡眠、断网与发布
+## 6. 定时、睡眠、断网与发布
 
 - 当前 LaunchAgent 使用 `StartCalendarInterval`，每天 09:30–23:30 每小时运行一次。
 - Mac 睡眠期间错过多个时间点，唤醒后通常合并补跑一次，而不是逐小时补齐。
@@ -121,55 +99,46 @@ ChatGPT 的预存余额与扣费计划从财务源文件的“ChatGPT 预存余�
 - 没有网络时 launchd 仍会启动，但联网数据源或 GitHub 推送可能失败；下一个有网的计划任务会再次尝试，并推送本地尚未同步的提交。
 - 只有三个公开 HTML 页面会进入自动快照提交；发布器不会顺带提交用户已经暂存的其他文件。
 
-## 8. 隐私与安全边界
+## 7. 隐私与安全边界
 
 公开仓库包含用户明确选择公开的额度与费用汇总，但以下内容不会发布：
 
 - API key、Cookie、登录 Token、Authorization header；
-- 豆包完整页面文本、账号昵称和浏览器存储；
+- 真实姓名、银行卡/开户行名称、家庭称呼与未打码邮箱（公开页通过 `public_replacements` 与邮箱掩码剔除）；
 - `quota-log.csv` 与本地 `quota-dashboard.html`；
-- CLI 会话原文、SSH 私钥和本机配置。
+- CLI 会话原文、SSH 私钥和本机配置（`sub2api.json`、`finance.json`、`public-hidden-accounts.json`）。
 
-豆包缓存位于 `~/.cache/ai-quota-monitor/doubao-quota.json`，权限为 `0600`，只含套餐、百分比、重置时间和采集时间。Chrome 的“允许来自 Apple 事件的 JavaScript”是全局开发者选项，应只授予可信本地自动化。
-
-## 9. 失败处理
+## 8. 失败处理
 
 | 场景 | 页面行为 |
 |---|---|
 | 单个数据源不可用 | 保留其他成功账号；公开发布仍受既有异常数量门槛限制 |
 | Sub2API 配置损坏 | 命令行停止写入；实时看板保留上次快照并标为缓存 |
-| Sub2API 已映射账号读取失败 | 只重试该账号，不切回本地 OAuth 或 CLI；不写成成功的 0% 样本 |
-| 豆包实时刷新失败但有缓存 | 卡片标“使用缓存”，备注只保留采集时间和短原因，例如“未开额度页”；不产生额度提醒 |
-| 豆包缓存超过阈值 | 额外显示过期时长，例如“过期14小时” |
-| 百分比或日期非法 | 拒绝整次豆包快照，不覆盖上一份有效缓存 |
+| Sub2API 账号读取失败 | 只重试该账号；仍失败且存在最近快照缓存时降级保留缓存，不写成 0% 样本 |
 | 页面动态文本含 HTML | 输出前转义，避免注入公开页面 |
 | GitHub 推送失败 | 保留本地提交，等待后续计划任务再次推送 |
 
-## 10. 测试与验收
+## 9. 测试与验收
 
 ```bash
-python3 -m unittest discover -s tests -v
-python3 -m py_compile quota_report.py publish_runtime.py
+python3 -m unittest discover -s tests -q
+python3 -m py_compile quota_report.py sub2api_quota.py publish_runtime.py scripts/sub2api_quota_snapshot.py
 bash -n publish.sh scripts/*.sh
-osacompile -o /tmp/read_doubao_quota.scpt scripts/read_doubao_quota.applescript
 ```
 
 关键运行时验收包括：
 
-- 真实 Chrome 刷新后，Navigation Timing 的类型必须为 `reload`；
-- 豆包刷新后必须写入新的采集时间和页面可见额度；
 - launchd smoke 输出 `INSTALL_RUNTIME_PASS` 且退出码为 0；
 - 完整 launchd 流程必须生成三页、提交、推送，并由 GitHub Pages 构建同一提交；
-- 线上页面的生成时间与额度字段必须和提交内容一致。
+- 线上页面的生成时间与额度字段必须和提交内容一致，且公开产物零明文邮箱/实名/银行名泄露。
 
-## 11. 主要文件
+## 10. 主要文件
 
-- [`quota_report.py`](../quota_report.py)：数据源、归一化、计算和 HTML 生成。
+- [`quota_report.py`](../quota_report.py)：Sub2API 归一化、Antigravity 周窗口补全、每日计算和 HTML 生成。
 - [`sub2api_quota.py`](../sub2api_quota.py)：私有映射、SSH 读取、窗口校验和账号级重试。
 - [`scripts/sub2api_quota_snapshot.py`](../scripts/sub2api_quota_snapshot.py)：服务器内受限用量查询，不返回凭据。
 - [`publish_runtime.py`](../publish_runtime.py)：唯一的生成、提交和推送流程。
 - [`publish.sh`](../publish.sh)：手动发布入口。
-- [`scripts/read_doubao_quota.applescript`](../scripts/read_doubao_quota.applescript)：Chrome 标签页刷新与最小 DOM 提取。
 - [`scripts/quota-publish-launchd.sh`](../scripts/quota-publish-launchd.sh)：安装到 Documents 外的稳定 launchd 入口。
 - [`tests/`](../tests/)：额度计算、隐私、HTML 转义、运行时和发布回归测试。
 

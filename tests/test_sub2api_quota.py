@@ -239,20 +239,16 @@ class ConfigurationAndCollectionTests(unittest.TestCase):
 
 
 class MonitorIntegrationTests(unittest.TestCase):
-    def test_configured_collectors_do_not_read_local_tokens_or_launch_clis(self):
+    def test_collect_delegates_to_sub2api_and_filters_hidden_rows(self):
         specs = [(3, "kimi", "kimi_mine"), (4, "kimi", "kimi_shared"),
                  (5, "minimax", "minimax"), (6, "openai", "codex_auth"),
                  (9, "antigravity", "antigravity")]
         config = {"accounts": [{"id": i, "platform": p, "collector": c, "name": c} for i, p, c in specs]}
         expected = [{"name": "MiniMax", "status": "ok", "source": "sub2api"}]
-        with mock.patch.dict(quota_report.os.environ, {"QUOTA_SOURCE": "auto"}), \
-             mock.patch.object(quota_report.sub2api_quota, "load_config", return_value=config), \
-             mock.patch.object(quota_report.sub2api_quota, "collect", return_value=expected), \
-             mock.patch.object(quota_report, "_load_kimi_keys", side_effect=AssertionError("local keys read")), \
-             mock.patch.object(quota_report, "_codex_auth_accounts", side_effect=AssertionError("local OAuth queried")), \
-             mock.patch.object(quota_report, "_minimax", side_effect=AssertionError("local CLI queried")), \
-             mock.patch.object(quota_report, "_agy", side_effect=AssertionError("local CLI queried")):
-            self.assertEqual(quota_report.collect(), expected)
+        with mock.patch.object(quota_report.sub2api_quota, "load_config", return_value=config), \
+             mock.patch.object(quota_report.sub2api_quota, "collect", return_value=expected) as remote_collect:
+            self.assertEqual(quota_report.collect(retry_attempts=1, retry_delay=2), expected)
+        remote_collect.assert_called_once_with(config, retry_attempts=1, retry_delay=2)
 
     def test_invalid_configuration_stops_before_writing_history_or_pages(self):
         with mock.patch.object(quota_report.sys, "argv", ["quota_report.py", "--log", "--html"]), \

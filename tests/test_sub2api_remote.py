@@ -337,6 +337,32 @@ class CollectionSafetyTests(unittest.TestCase):
         self.assertEqual(result["accounts"][0]["error"], "database_error")
         self.assertNotIn("private detail", json.dumps(result))
 
+    def test_post_json_shares_secret_redacting_transport(self):
+        calls = []
+
+        class FakeOpener:
+            def open(self, request, timeout):
+                calls.append((request, timeout))
+                raise remote.urllib.error.HTTPError(
+                    request.full_url,
+                    502,
+                    "bad gateway",
+                    hdrs=None,
+                    fp=io.BytesIO(b"upstream secret body"),
+                )
+
+        with mock.patch.object(remote.urllib.request, "build_opener", return_value=FakeOpener()):
+            with self.assertRaises(remote.RequestFailure) as raised:
+                remote._post_json("https://example.invalid/post", {"Accept": "application/json"}, {"project": "p"})
+
+        self.assertEqual(raised.exception.code, "http_error")
+        self.assertEqual(raised.exception.http_status, 502)
+        self.assertNotIn("upstream secret", str(raised.exception))
+        request, timeout = calls[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.headers.get("Content-type"), "application/json")
+        self.assertEqual(timeout, 30)
+
 
 if __name__ == "__main__":
     unittest.main()

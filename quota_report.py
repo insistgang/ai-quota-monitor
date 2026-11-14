@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """quota_report.py — AI 额度监控表（查询用量，不发送模型任务或主动重置额度）
 
-配置 Sub2API 后，已映射来源改由服务器读取；未配置时保留以下本机采集器。
-
-监控对象（统一口径：本周已用 + 周重置）：
-- Kimi（本人 99/月）：KimiCodeBar credentials 里 alias=Leo-usage 的 key
-- Kimi（朋友 199/月）：KimiCodeBar credentials 里 alias=friend* 的 key
-- 豆包个人会员：已登录 Chrome 中官方额度页的可见 DOM
-- Codex（codex-auth 多账号）：`codex-auth list --json` 一次读取全部已登录账号的官方 5h/周窗额度（API 实时）
-- MiniMax：本机 mmx CLI 的 `mmx quota show`（JSON 输出）
+所有监控来源均通过 Sub2API 在服务器只读读取；Antigravity 分组额度按需补充本机
+`agy /usage` 面板的周重置周期。
 
 用法：
   python3 quota_report.py            # 终端表格
   python3 quota_report.py --json     # 机器可读
   python3 quota_report.py --log      # 追加快照到 quota-log.csv
   python3 quota_report.py --html     # 生成 quota-dashboard.html
-安全：永不打印任何 key/token；网络调用全部只读且带超时。
+  python3 quota_report.py --serve    # 本地实时刷新服务（127.0.0.1:8788）
+安全：永不打印任何 key/token；网页统一打码邮箱并应用私有脱敏映射。
 """
 from __future__ import annotations
 
@@ -31,20 +26,12 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
-from collections.abc import Callable
 from pathlib import Path
 
 import sub2api_quota
 
 HOME = Path.home()
 LOG_CSV = Path(__file__).with_name("quota-log.csv")
-KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
-DOUBAO_QUOTA_URL = "https://www.doubao.com/member/quota-management"
-DOUBAO_QUOTA_CACHE = Path(os.environ.get(
-    "DOUBAO_QUOTA_CACHE",
-    str(HOME / ".cache/ai-quota-monitor/doubao-quota.json"),
-))
 PUBLIC_HIDDEN_ACCOUNTS_PATH = Path(os.environ.get(
     "QUOTA_PUBLIC_HIDDEN_ACCOUNTS",
     str(HOME / ".cache/ai-quota-monitor/public-hidden-accounts.json"),
@@ -57,534 +44,28 @@ AGY_GROUPS_CACHE = Path(os.environ.get(
     "QUOTA_AGY_GROUPS_CACHE",
     str(HOME / ".cache/ai-quota-monitor/agy-groups.json"),
 ))
-DOUBAO_APPLESCRIPT = Path(__file__).with_name("scripts") / "read_doubao_quota.applescript"
-HTTP_TIMEOUT = 15
-SOURCE_MAX_AGE_SECONDS = 5 * 60
 
 
-def _http_json(url: str, key: str) -> dict:
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
-        return json.loads(r.read().decode("utf-8"))
+# ---------- 本地缓存读写 ----------
 
 
-def _fmt_utc(ts: str | None) -> str:
-    if not ts:
-        return "?"
-    try:
-        return dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().strftime("%m-%d %H:%M")
-    except Exception:  # noqa: BLE001
-        return ts
-
-
-def _fmt_epoch(ts) -> str:
-    try:
-        return dt.datetime.fromtimestamp(int(ts)).strftime("%m-%d %H:%M")
-    except Exception:  # noqa: BLE001
-        return "?"
-
-
-def _snapshot_stale(timestamp) -> bool:
-    """只有近五分钟、时间可验证的源快照可跳过实时查询。"""
-    try:
-        if isinstance(timestamp, str) and "T" in timestamp:
-            parsed = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                return True
-            captured = parsed.timestamp()
-        else:
-            captured = float(timestamp)
-        age = time.time() - captured
-        return not -60 <= age <= SOURCE_MAX_AGE_SECONDS
-    except (TypeError, ValueError, OverflowError):
-        return True
-
-
-# ---------- 数据源 ----------
-
-
-def _doubao_pct(line: str) -> tuple[float, str]:
-    """解析豆包已用百分比及“已用完/未消耗”状态。"""
-    state = line.strip()
-    if state == "已用完":
-        return 100.0, "100%"
-    if state == "未消耗":
-        return 0.0, "0%"
-    m = re.search(r"已用\s*(<)?\s*(\d+(?:\.\d+)?)\s*%", line)
-    if not m:
-        raise ValueError("豆包额度百分比缺失")
-    value = float(m.group(2))
-    if not 0 <= value <= 100:
-        raise ValueError("豆包额度百分比超出范围")
-    raw = f"{'<' if m.group(1) else ''}{m.group(2)}%"
-    return value, raw
-
-
-def _doubao_reset_value(month: int, day: int, hour: int, minute: int) -> str:
-    try:
-        dt.datetime(2000, month, day, hour, minute)
-    except ValueError as exc:
-        raise ValueError("豆包额度重置时间非法") from exc
-    return f"{month:02d}-{day:02d} {hour:02d}:{minute:02d}"
-
-
-def _doubao_reset(line: str, captured_at: dt.datetime) -> str:
-    """把豆包的中文绝对/相对重置时间归一化为 MM-DD HH:MM。"""
-    if line.strip() == "开始使用后计时":
-        return "开始使用后计时"
-    absolute = re.search(r"(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})\s*重置", line)
-    if absolute:
-        month, day, hour, minute = (int(x) for x in absolute.groups())
-        return _doubao_reset_value(month, day, hour, minute)
-
-    relative = re.search(
-        r"(?:(\d+)\s*天)?\s*(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分钟)?\s*后重置",
-        line,
-    )
-    if relative and any(relative.groups()):
-        try:
-            days, hours, minutes = (int(x) if x else 0 for x in relative.groups())
-            delta = dt.timedelta(days=days, hours=hours, minutes=minutes)
-        except (OverflowError, ValueError) as exc:
-            raise ValueError("豆包额度重置时间非法") from exc
-        if delta <= dt.timedelta(0) or delta > dt.timedelta(days=8):
-            raise ValueError("豆包额度重置时间非法")
-        try:
-            reset_at = captured_at.replace(second=0, microsecond=0) + delta
-        except (OverflowError, ValueError) as exc:
-            raise ValueError("豆包额度重置时间非法") from exc
-        return reset_at.strftime("%m-%d %H:%M")
-    raise ValueError("豆包额度重置时间缺失")
-
-
-def _parse_doubao_dom(text: str, captured_at: dt.datetime | None = None) -> dict:
-    """从额度管理页的可见文本中提取最小字段，不保留原始 DOM。"""
-    captured_at = captured_at or dt.datetime.now().astimezone()
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    current_idx = next(
-        (i for i, line in enumerate(lines) if line == "当前时段"),
-        None,
-    )
-    weekly_idx = next(
-        (i for i, line in enumerate(lines) if re.fullmatch(r"近\s*7\s*天", line)),
-        None,
-    )
-    if current_idx is None or weekly_idx is None or weekly_idx <= current_idx:
-        raise ValueError("未找到豆包“当前时段/近 7 天”额度区")
-
-    def usage_block(start: int, end: int) -> tuple[float, str, str]:
-        block = lines[start + 1:end]
-        used_line = next((
-            line for line in block
-            if line.startswith("已用") or line == "未消耗"
-        ), "")
-        reset_line = next((
-            line for line in block
-            if "重置" in line or line == "开始使用后计时"
-        ), "")
-        used_pct, used_text = _doubao_pct(used_line)
-        return used_pct, used_text, _doubao_reset(reset_line, captured_at)
-
-    current_pct, current_text, current_reset = usage_block(current_idx, weekly_idx)
-    weekly_pct, weekly_text, weekly_reset = usage_block(weekly_idx, len(lines))
-
-    management_idx = next((
-        i for i in range(current_idx - 1, -1, -1)
-        if "订阅与额度管理" in lines[i]
-    ), None)
-    plan = "个人会员"
-    if management_idx is not None and management_idx > 0:
-        candidate = lines[management_idx - 1]
-        if candidate.endswith("套餐") and not candidate.startswith(("升级至", "购买")):
-            plan = candidate
-    trial = ""
-    if management_idx is not None:
-        match = re.search(
-            r"(免费体验至\s*\d{1,2}月\d{1,2}日)",
-            lines[management_idx],
-        )
-        if match:
-            trial = match.group(1).replace(" ", "")
-
-    return {
-        "name": f"豆包 · {plan}",
-        "status": "ok",
-        "used_pct": weekly_pct,
-        "used_text": weekly_text,
-        "reset": weekly_reset,
-        "fiveh_pct": current_pct,
-        "fiveh_text": current_text,
-        "fiveh_reset": current_reset,
-        "fiveh_label": "当前时段",
-        "note": trial,
-    }
-
-
-def _doubao_snapshot(text: str, captured_at: dt.datetime | None = None) -> dict:
-    captured_at = captured_at or dt.datetime.now().astimezone()
-    return {
-        "schema_version": 1,
-        "captured_at": captured_at.isoformat(timespec="seconds"),
-        "source_url": DOUBAO_QUOTA_URL,
-        "row": _parse_doubao_dom(text, captured_at),
-    }
-
-
-def _write_doubao_snapshot(snapshot: dict, cache_path: Path = DOUBAO_QUOTA_CACHE) -> None:
-    """原子写入仅含额度数字的 0600 本地缓存。"""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
+def _write_json_0600(path: Path, payload: dict, *, indent: int | None = 2) -> None:
+    """原子写入权限为 0600 的本地 JSON 缓存，防止中途中断破坏或过宽权限暴露。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         temp_path.write_text(
-            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(payload, ensure_ascii=False, indent=indent) + "\n",
             encoding="utf-8",
         )
         temp_path.chmod(0o600)
-        temp_path.replace(cache_path)
+        temp_path.replace(path)
     finally:
         if temp_path.exists():
             temp_path.unlink()
 
 
-def _doubao_pct_value_is_valid(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and 0 <= float(value) <= 100
-    )
-
-
-def _doubao_reset_text_is_valid(value: object) -> bool:
-    """重置文案要么是固定时刻，要么是“开始使用后计时”这种滚动窗口提示。
-
-    _doubao_reset() 会把页面上的“开始使用后计时”原样保留，校验器若只认
-    MM-DD HH:MM，滚动窗口套餐的快照会被判无效，缓存回退随之失效。
-    """
-    if value == "开始使用后计时":
-        return True
-    if not isinstance(value, str):
-        return False
-    match = re.fullmatch(r"(\d{2})-(\d{2})\s+(\d{2}):(\d{2})", value)
-    if not match:
-        return False
-    try:
-        _doubao_reset_value(*(int(part) for part in match.groups()))
-    except ValueError:
-        return False
-    return True
-
-
-def _doubao_fiveh_reset_text_is_valid(value: object) -> bool:
-    return _doubao_reset_text_is_valid(value)
-
-
-def _read_doubao_snapshot(cache_path: Path = DOUBAO_QUOTA_CACHE) -> dict | None:
-    try:
-        snapshot = json.loads(cache_path.read_text(encoding="utf-8"))
-        captured_at = snapshot.get("captured_at")
-        if not isinstance(captured_at, str):
-            return None
-        captured = dt.datetime.fromisoformat(captured_at)
-        row = snapshot.get("row")
-        if (
-            snapshot.get("schema_version") != 1
-            or snapshot.get("source_url") != DOUBAO_QUOTA_URL
-            or captured.tzinfo is None
-            or not isinstance(row, dict)
-            or row.get("status") != "ok"
-            or not isinstance(row.get("name"), str)
-            or not row["name"].startswith("豆包 · ")
-            or not _doubao_pct_value_is_valid(row.get("used_pct"))
-            or not _doubao_pct_value_is_valid(row.get("fiveh_pct"))
-            or not _doubao_reset_text_is_valid(row.get("reset"))
-            or not _doubao_fiveh_reset_text_is_valid(row.get("fiveh_reset"))
-        ):
-            return None
-        return snapshot
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _doubao_max_age_hours() -> float:
-    try:
-        return max(0.25, float(os.environ.get("DOUBAO_QUOTA_MAX_AGE_HOURS", "6")))
-    except ValueError:
-        return 6.0
-
-
-DOUBAO_SYNC_ERROR_SHORT = {
-    "Chrome 未运行": "Chrome未开",
-    "Chrome 中未打开豆包额度管理页": "未开额度页",
-    "Chrome 未允许来自 Apple 事件的 JavaScript": "需开Apple事件JS",
-    "macOS 未授权自动化控制 Chrome": "需授权自动化",
-    "豆包额度页刷新后未加载": "额度页未加载",
-    "页面额度格式异常": "页面格式异常",
-    "实时刷新异常": "刷新失败",
-}
-
-
-def _doubao_short_error(public_error: str) -> str:
-    return DOUBAO_SYNC_ERROR_SHORT.get(public_error, public_error)
-
-
-def _doubao_age_label(age_hours: float) -> str:
-    if age_hours < 1:
-        minutes = max(1, int(round(age_hours * 60)))
-        return f"过期{minutes}分钟"
-    if age_hours < 10:
-        value = round(age_hours, 1)
-        if value == int(value):
-            value = int(value)
-        return f"过期{value}小时"
-    return f"过期{int(round(age_hours))}小时"
-
-
-def _doubao_compose_note(
-    base_note: str = "",
-    *,
-    captured: dt.datetime,
-    stale: bool,
-    age_hours: float,
-    cache_fallback: bool = False,
-    sync_error: str | None = None,
-) -> str:
-    parts = [
-        part for part in (base_note or "").split(" · ")
-        if part.startswith("免费体验至")
-    ]
-    if cache_fallback or stale:
-        parts.append("缓存 " + captured.astimezone().strftime("%m-%d %H:%M"))
-        if stale:
-            parts.append(_doubao_age_label(age_hours))
-    if sync_error:
-        parts.append(_doubao_short_error(sync_error))
-    return " · ".join(parts)
-
-
-def _doubao_row_from_snapshot(
-    snapshot: dict,
-    now: dt.datetime | None = None,
-    *,
-    cache_fallback: bool = False,
-    sync_error: str | None = None,
-) -> dict:
-    row = dict(snapshot["row"])
-    captured = dt.datetime.fromisoformat(snapshot["captured_at"])
-    now = now or dt.datetime.now().astimezone()
-    age_hours = max(0.0, (now.timestamp() - captured.timestamp()) / 3600)
-    row["stale"] = cache_fallback or age_hours > _doubao_max_age_hours()
-    row["note"] = _doubao_compose_note(
-        row.get("note", ""),
-        captured=captured,
-        stale=row["stale"],
-        age_hours=age_hours,
-        cache_fallback=cache_fallback,
-        sync_error=sync_error,
-    )
-    return row
-
-
-def _read_doubao_chrome_dom() -> str:
-    """刷新并读取已打开、已登录的 Chrome 额度页；不启动浏览器或读存储。"""
-    if not DOUBAO_APPLESCRIPT.exists():
-        raise RuntimeError("豆包 Chrome 读取脚本缺失")
-    running = subprocess.run(
-        ["pgrep", "-x", "Google Chrome"], capture_output=True, timeout=3, check=False,
-    )
-    if running.returncode != 0:
-        raise RuntimeError("Chrome 未运行")
-    result = subprocess.run(
-        ["osascript", str(DOUBAO_APPLESCRIPT), DOUBAO_QUOTA_URL, "refresh"],
-        capture_output=True,
-        text=True,
-        timeout=45,
-        check=False,
-    )
-    if result.returncode != 0:
-        error = (result.stderr or result.stdout).lower()
-        if "not authorized" in error or "-1743" in error:
-            raise RuntimeError("macOS 未授权自动化控制 Chrome")
-        if (
-            "javascript through apple events" in error
-            or "apple events" in error
-            or ("javascript" in error and "apple 事件" in error)
-            or ("applescript 执行 javascript" in error and "功能已关闭" in error)
-        ):
-            raise RuntimeError("Chrome 未允许来自 Apple 事件的 JavaScript")
-        if "未找到" in error:
-            raise RuntimeError("Chrome 中未打开豆包额度管理页")
-        if "刷新后未加载" in error:
-            raise RuntimeError("豆包额度页刷新后未加载")
-        raise RuntimeError("Chrome DOM 读取失败")
-    text = result.stdout.strip()
-    if not text:
-        raise RuntimeError("豆包额度页 DOM 返回为空")
-    return text
-
-
-def _doubao_public_sync_error(exc: Exception) -> str:
-    message = str(exc)
-    known_errors = (
-        "Chrome 未运行",
-        "Chrome 中未打开豆包额度管理页",
-        "Chrome 未允许来自 Apple 事件的 JavaScript",
-        "macOS 未授权自动化控制 Chrome",
-        "豆包额度页刷新后未加载",
-    )
-    for known in known_errors:
-        if known in message:
-            return known
-    if isinstance(exc, ValueError):
-        return "页面额度格式异常"
-    return "实时刷新异常"
-
-
-def _sync_doubao_chrome(
-    cache_path: Path = DOUBAO_QUOTA_CACHE,
-    captured_at: dt.datetime | None = None,
-) -> dict:
-    snapshot = _doubao_snapshot(_read_doubao_chrome_dom(), captured_at)
-    _write_doubao_snapshot(snapshot, cache_path)
-    return snapshot
-
-
-def _import_doubao_dom(
-    text: str,
-    cache_path: Path = DOUBAO_QUOTA_CACHE,
-    captured_at: dt.datetime | None = None,
-) -> dict:
-    snapshot = _doubao_snapshot(text, captured_at)
-    _write_doubao_snapshot(snapshot, cache_path)
-    return snapshot
-
-
-def _doubao_quota(label: str = "豆包 · 个人会员") -> dict:
-    """优先实时读取 Chrome DOM；失败时使用本地最小快照并标明新鲜度。
-
-    豆包额度只能从已登录 Chrome 的额度页读取，页面没开属于外部环境状态，不是采集
-    故障。降级行标记 retryable=False，不占用发布容错额度——否则这个来源会长期占满
-    额度，让任何一次别的来源抖动都取消整轮发布。具体失败原因仍写在状态和备注里。
-    """
-    try:
-        return _doubao_row_from_snapshot(_sync_doubao_chrome())
-    except Exception as exc:  # noqa: BLE001
-        public_error = _doubao_public_sync_error(exc)
-        snapshot = _read_doubao_snapshot()
-        if snapshot:
-            try:
-                row = _doubao_row_from_snapshot(
-                    snapshot,
-                    cache_fallback=True,
-                    sync_error=public_error,
-                )
-                row["cache_fallback"] = True
-                row["retryable"] = False
-                return row
-            except Exception:  # noqa: BLE001
-                pass
-        return {
-            "name": label,
-            "status": f"{_doubao_short_error(public_error)} · 无缓存",
-            "retryable": False,
-        }
-
-
-def _kimi_quota(label: str, key: str | None) -> dict:
-    if not key:
-        return {"name": label, "status": "未配置 key"}
-    try:
-        d = _http_json(KIMI_USAGE_URL, key)
-        u = d.get("usage", {})
-        lim, used = int(u.get("limit", 0)), int(u.get("used", 0))
-        row = {
-            "name": label,
-            "status": "ok",
-            "used_pct": round(used / lim * 100, 1) if lim else None,
-            "used_text": f"{used}/{lim}",
-            "reset": _fmt_utc(u.get("resetTime")),
-        }
-        for w in d.get("limits", []):
-            win = w.get("window", {})
-            if win.get("duration") == 300 and win.get("timeUnit") == "TIME_UNIT_MINUTE":
-                det = w.get("detail", {})
-                l5, u5 = int(det.get("limit", 0)), int(det.get("used", 0))
-                row["fiveh_pct"] = round(u5 / l5 * 100, 1) if l5 else None
-                row["fiveh_text"] = f"{u5}/{l5}"
-                row["fiveh_reset"] = _fmt_utc(det.get("resetTime"))
-        return row
-    except Exception as e:  # noqa: BLE001
-        return {"name": label, "status": f"查询失败: {type(e).__name__}"}
-
-
-def _rate_window_usable(win) -> bool:
-    return isinstance(win, dict) and win.get("used_percent") is not None
-
-
-def _codex_windows(rl: dict) -> tuple[dict, dict]:
-    """按 window_minutes 区分周窗和 5h 窗，避免把 primary 的 5h 数据当成周额度。"""
-    week, fiveh = {}, {}
-    for key in ("secondary", "primary"):
-        win = rl.get(key)
-        if not _rate_window_usable(win):
-            continue
-        try:
-            minutes = int(win.get("window_minutes") or 0)
-        except (TypeError, ValueError):
-            minutes = 0
-        if minutes >= 24 * 60:
-            week = win
-        elif minutes and minutes <= 12 * 60:
-            fiveh = win
-    if not week and not fiveh:
-        named_week = rl.get("secondary") if _rate_window_usable(rl.get("secondary")) else {}
-        named_fiveh = rl.get("primary") if _rate_window_usable(rl.get("primary")) else {}
-        week, fiveh = named_week or {}, named_fiveh or {}
-    return week or {}, fiveh or {}
-
-
-def _fiveh_window_active(win: dict) -> bool:
-    """resets_at 已过期的 5h 窗是旧会话快照，继续展示会误导，直接丢弃。"""
-    resets = win.get("resets_at")
-    if resets is None:
-        return True
-    try:
-        return float(resets) > time.time()
-    except (TypeError, ValueError):
-        return True
-
-
-def _codex_row(label: str, rl: dict, note: str = "") -> dict:
-    week, fiveh = _codex_windows(rl)
-    if fiveh and not _fiveh_window_active(fiveh):
-        fiveh = {}
-    if not week and fiveh:
-        note = (note + " · " if note else "") + "仅5h窗数据"
-        row = {
-            "name": label,
-            "status": "ok",
-            "used_pct": None,
-            "used_text": "周窗未知",
-            "reset": "?",
-            "note": note,
-            "fiveh_text": f"{fiveh['used_percent']:g}%",
-            "fiveh_pct": fiveh["used_percent"],
-            "fiveh_reset": _fmt_epoch(fiveh.get("resets_at")),
-        }
-        return row
-    used = week.get("used_percent")
-    row = {
-        "name": label,
-        "status": "ok",
-        "used_pct": used,
-        "used_text": f"{used}%" if used is not None else "?",
-        "reset": _fmt_epoch(week.get("resets_at")),
-        "note": note or (rl.get("plan_type") or ""),
-    }
-    if fiveh.get("used_percent") is not None:
-        row["fiveh_text"] = f"{fiveh['used_percent']:g}%"
-        row["fiveh_pct"] = fiveh["used_percent"]
-        row["fiveh_reset"] = _fmt_epoch(fiveh.get("resets_at"))
-    return row
+# ---------- 数据源 ----------
 
 
 def _agy_bin() -> str:
@@ -690,11 +171,7 @@ def _load_agy_groups_cache() -> dict[str, dict]:
 
 def _save_agy_groups_cache(groups: dict[str, dict]) -> None:
     try:
-        AGY_GROUPS_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        AGY_GROUPS_CACHE.write_text(
-            json.dumps({"captured_at": time.time(), "groups": groups}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _write_json_0600(AGY_GROUPS_CACHE, {"captured_at": time.time(), "groups": groups})
     except OSError:
         pass
 
@@ -763,187 +240,6 @@ def _enrich_antigravity_rows(rows: list[dict]) -> list[dict]:
     return enriched
 
 
-def _agy() -> list[dict]:
-    """Antigravity：从真实 TUI /usage 面板读取官方真实周额度与 5h 窗（只取 Gemini 组）。"""
-    bin_path = _agy_bin()
-    text = _tmux_slash_probe(bin_path, "/usage", wait_boot=12, wait_panel=6, pre_enter=False)
-    if not text:
-        return [{"name": "Antigravity · Gemini 组", "status": "TUI 探测失败"}]
-    g = _agy_parse_group(text, "GEMINI MODELS")
-    if not g:
-        return [{"name": "Antigravity · Gemini 组", "status": "面板解析失败"}]
-    g.update({"name": "Antigravity · Gemini 组", "status": "ok", "note": "Google AI Pro"})
-    return [g]
-
-
-def _codex_auth_accounts() -> list[dict]:
-    """Codex 多账号：`codex-auth list --json` 一次取回全部已登录账号的官方 5h/周窗额度。"""
-    bin_path = shutil.which("codex-auth") or str(HOME / ".local/bin/codex-auth")
-    try:
-        out = subprocess.run(
-            [bin_path, "list", "--json"],
-            capture_output=True, timeout=60, check=False,
-        )
-    except FileNotFoundError:
-        return [{"name": "Codex（codex-auth）", "status": "codex-auth 未安装"}]
-    except Exception as e:  # noqa: BLE001
-        return [{"name": "Codex（codex-auth）", "status": f"查询失败: {type(e).__name__}"}]
-    if out.returncode != 0:
-        return [{"name": "Codex（codex-auth）", "status": "codex-auth list 执行失败"}]
-    try:
-        data = json.loads(out.stdout.decode("utf-8", errors="ignore"))
-    except Exception:  # noqa: BLE001
-        return [{"name": "Codex（codex-auth）", "status": "codex-auth 输出解析失败"}]
-    rows = []
-    for acct in data.get("accounts", []):
-        if not isinstance(acct, dict):
-            continue
-        email = acct.get("email") or f"账号{acct.get('number', '?')}"
-        label = f"Codex · {email}"
-        usage = acct.get("usage") or {}
-        refresh = usage.get("refresh") or {}
-        if not (
-            _rate_window_usable(usage.get("primary"))
-            or _rate_window_usable(usage.get("secondary"))
-        ):
-            rows.append({"name": label, "status": refresh.get("error_code") or "无额度数据"})
-            continue
-        note_parts = []
-        plan = acct.get("plan")
-        if plan:
-            note_parts.append(str(plan).capitalize())
-        if acct.get("active"):
-            note_parts.append("当前活跃")
-        refresh_failed = bool(refresh and refresh.get("status") != "ok")
-        if refresh_failed:
-            note_parts.append("API 刷新失败，数据可能滞后")
-        updated = usage.get("updated_at")
-        if updated:
-            note_parts.append(f"数据 {_fmt_epoch(updated)}")
-        stale = _snapshot_stale(updated)
-        if stale:
-            note_parts.append("快照过期" if updated else "数据时间未知")
-        row = _codex_row(label, usage, note=" · ".join(note_parts))
-        row["stale"] = refresh_failed or stale or usage.get("source") == "cache"
-        row["cache_fallback"] = refresh_failed or usage.get("source") == "cache"
-        row["captured_at"] = updated
-        rows.append(row)
-    if not rows:
-        return [{"name": "Codex（codex-auth）", "status": "codex-auth 未登录任何账号"}]
-    return rows
-
-
-def _mmx_bin() -> str | None:
-    if shutil.which("mmx"):
-        return "mmx"
-    cands = sorted(Path.home().glob(".nvm/versions/node/*/bin/mmx"))
-    return str(cands[-1]) if cands else None
-
-
-def _minimax(label: str) -> dict:
-    """MiniMax：本机 mmx-cli 的 `mmx quota show` 读取官方真实账号剩余额度。"""
-    mmx = _mmx_bin()
-    if not mmx:
-        return {"name": label, "status": "mmx-cli 未找到"}
-    try:
-        out = subprocess.run([mmx, "quota", "show"], capture_output=True, timeout=20, check=False)
-        d = json.loads(out.stdout.decode("utf-8", errors="ignore"))
-        models = d.get("model_remains", [])
-        g = next((m for m in models if m.get("model_name") == "general"), models[0] if models else None)
-        if not g:
-            return {"name": label, "status": "返回为空"}
-        w_remain = g.get("current_weekly_remaining_percent")
-        i_remain = g.get("current_interval_remaining_percent")
-        row = {
-            "name": label,
-            "status": "ok",
-            "used_pct": round(100 - float(w_remain), 1) if w_remain is not None else None,
-            "used_text": f"{100 - float(w_remain):g}%" if w_remain is not None else "?",
-            "reset": _fmt_epoch((g.get("weekly_end_time") or 0) / 1000),
-        }
-        if i_remain is not None:
-            row["fiveh_pct"] = round(100 - float(i_remain), 1)
-            row["fiveh_text"] = f"{100 - float(i_remain):g}%"
-            row["fiveh_reset"] = _fmt_epoch((g.get("end_time") or 0) / 1000)
-        return row
-    except Exception as e:  # noqa: BLE001
-        return {"name": label, "status": f"查询失败: {type(e).__name__}"}
-
-
-def _kimi_keys_from_codebar() -> tuple[str | None, str | None]:
-    mine = friend = None
-    try:
-        d = json.loads((HOME / "Library/Application Support/KimiCodeBar/credentials.json").read_text())
-        for a in d.get("accounts", []):
-            cred = a.get("credential", {}).get("apiKey")
-            key = None
-            if isinstance(cred, dict):
-                key = cred.get("key") or cred.get("value") or next(iter(cred.values()), None)
-            elif isinstance(cred, str):
-                key = cred
-            if not key:
-                continue
-            alias = (a.get("alias") or "").lower()
-            if "leo" in alias:
-                mine = key
-            elif "friend" in alias:
-                friend = key
-    except Exception:  # noqa: BLE001
-        pass
-    return mine, friend
-
-
-def _load_kimi_keys() -> tuple[str | None, str | None]:
-    mine, friend = _kimi_keys_from_codebar()
-    if mine or friend:
-        return mine, friend
-    try:
-        auth = json.loads((HOME / ".local/share/opencode/auth.json").read_text())
-        k = auth.get("kimi-for-coding") or {}
-        if k.get("type") == "api":
-            mine = k.get("key")
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        out = subprocess.run(
-            ["/usr/libexec/PlistBuddy", "-c", "Print :kimiApiKey",
-             str(HOME / "Library/Preferences/com.kimicodebar.app.plist")],
-            capture_output=True, timeout=5, check=False,
-        )
-        if out.returncode == 0:
-            friend = out.stdout.decode().strip() or None
-    except Exception:  # noqa: BLE001
-        pass
-    return mine, friend
-
-
-def _collect_batches_with_retries(
-    batches: list[tuple[str, Callable[[], list[dict]]]],
-    *,
-    retry_attempts: int = 0,
-    retry_delay: float = 0,
-) -> list[dict]:
-    """采集各来源；只重试异常或缓存回退的批次，成功批次保持原结果。"""
-    results = {key: collector() for key, collector in batches}
-    for _attempt in range(max(0, retry_attempts)):
-        retry_keys = {
-            key
-            for key, rows in results.items()
-            if not rows or any(
-                row.get("status") != "ok" or row.get("stale")
-                for row in rows
-            )
-        }
-        if not retry_keys:
-            break
-        if retry_delay > 0:
-            time.sleep(retry_delay)
-        for key, collector in batches:
-            if key in retry_keys:
-                results[key] = collector()
-    return [row for key, _collector in batches for row in results[key]]
-
-
 def _unhealthy_rows(rows: list[dict]) -> list[dict]:
     """统计需要重试或阻断写入的来源。
 
@@ -963,13 +259,10 @@ def _save_last_good(rows: list[dict]) -> None:
     if not fresh:
         return
     try:
-        LAST_GOOD_JSON.parent.mkdir(parents=True, exist_ok=True)
-        LAST_GOOD_JSON.write_text(
-            json.dumps(
-                {"captured_at": dt.datetime.now().isoformat(timespec="seconds"), "rows": fresh},
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        _write_json_0600(
+            LAST_GOOD_JSON,
+            {"captured_at": dt.datetime.now().isoformat(timespec="seconds"), "rows": fresh},
+            indent=None,
         )
     except OSError:
         pass
@@ -1041,40 +334,16 @@ def _visible_quota_rows(rows: list[dict]) -> list[dict]:
 
 
 def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
-    source = os.environ.get("QUOTA_SOURCE", "auto")
-    if source not in {"auto", "local", "sub2api"}:
-        raise sub2api_quota.ConfigError("QUOTA_SOURCE 只能为 auto、local 或 sub2api")
-    config = sub2api_quota.load_config() if source != "local" else None
-    if source == "sub2api" and config is None:
+    config = sub2api_quota.load_config()
+    if config is None:
         raise sub2api_quota.ConfigError("尚未配置 Sub2API 额度数据源")
-    rows, covered = [], set()
-    if config:
-        covered = {a["collector"] for a in config["accounts"]}
-        covered.update(a["collector"] for a in config.get("unmapped_accounts", []))
-        rows = _enrich_antigravity_rows(
-            sub2api_quota.collect(config, retry_attempts=retry_attempts, retry_delay=retry_delay)
+    rows = _enrich_antigravity_rows(
+        sub2api_quota.collect(
+            config,
+            retry_attempts=retry_attempts,
+            retry_delay=retry_delay,
         )
-
-    keys = None
-
-    def kimi_row(index: int, label: str) -> list[dict]:
-        nonlocal keys
-        if keys is None:
-            keys = _load_kimi_keys()
-        return [_kimi_quota(label, keys[index])]
-
-    batches = [
-        ("kimi_mine", lambda: kimi_row(0, "Kimi · 本人（948/年）")),
-        ("kimi_shared", lambda: kimi_row(1, "Kimi · 副账号")),
-        ("codex_auth", _codex_auth_accounts),
-        ("minimax", lambda: [_minimax("MiniMax")]),
-        ("antigravity", _agy),
-    ]
-    rows.extend(_collect_batches_with_retries(
-        [(name, collector) for name, collector in batches if name not in covered],
-        retry_attempts=retry_attempts,
-        retry_delay=retry_delay,
-    ))
+    )
     return _visible_quota_rows(rows)
 
 
@@ -1100,6 +369,19 @@ def _remain_pct(r: dict, key: str | None = None) -> float | None:
     return None
 
 
+def _resolve_reset_dt(now: dt.datetime, month: int, day: int, hh: int, mm: int) -> dt.datetime | None:
+    try:
+        d = now.replace(month=month, day=day, hour=hh, minute=mm, second=0, microsecond=0)
+    except ValueError:
+        return None
+    if d < now - dt.timedelta(days=2):
+        try:
+            d = d.replace(year=now.year + 1)
+        except ValueError:
+            pass
+    return d
+
+
 def _parse_reset(s: str | None) -> dt.datetime | None:
     if not s:
         return None
@@ -1108,32 +390,14 @@ def _parse_reset(s: str | None) -> dt.datetime | None:
     m = re.search(r"(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})", raw)
     if m:
         month, day, hh, mm = (int(x) for x in m.groups())
-        try:
-            d = now.replace(month=month, day=day, hour=hh, minute=mm, second=0, microsecond=0)
-        except ValueError:
-            return None
-        if d < now - dt.timedelta(days=2):
-            try:
-                d = d.replace(year=now.year + 1)
-            except ValueError:
-                pass
-        return d
+        return _resolve_reset_dt(now, month, day, hh, mm)
     m = re.search(r"([A-Za-z]+)\s+(\d{1,2}),\s+(\d{1,2}):(\d{2})", raw)
     if m:
         mon = _MONTHS.get(m.group(1))
         if not mon:
             return None
         day, hh, mm = int(m.group(2)), int(m.group(3)), int(m.group(4))
-        try:
-            d = now.replace(month=mon, day=day, hour=hh, minute=mm, second=0, microsecond=0)
-        except ValueError:
-            return None
-        if d < now - dt.timedelta(days=2):
-            try:
-                d = d.replace(year=now.year + 1)
-            except ValueError:
-                pass
-        return d
+        return _resolve_reset_dt(now, mon, day, hh, mm)
     return None
 
 
@@ -1170,16 +434,16 @@ def _alerts(rows: list[dict]) -> list[dict]:
             continue
         if _quota_hidden(r.get("name")):
             continue
-        rem = _remain_pct(r)
+        weekly_rem = _remain_pct(r, "used_pct")
         wr = _parse_reset(r.get("reset"))
         hit_week = False
-        if rem is not None and rem > 3 and wr is not None:
+        if weekly_rem is not None and weekly_rem > 3 and wr is not None:
             hours = (wr - now).total_seconds() / 3600
             if 0 <= hours <= _WEEKLY_SOON_H:
                 out.append({
                     "name": r["name"],
                     "kind": "week",
-                    "remain": rem,
+                    "remain": weekly_rem,
                     "when": wr,
                     "until": _fmt_until(wr, now),
                 })
@@ -1187,7 +451,7 @@ def _alerts(rows: list[dict]) -> list[dict]:
         if hit_week:
             continue
         # 周额度已用完时，5h 窗剩余同样无法使用，不再提示抓紧用。
-        if rem is not None and rem <= 3:
+        if weekly_rem is not None and weekly_rem <= 3:
             continue
         # Kimi 的 5h 窗只限制短时吞吐，不代表周额度即将过期；提醒只看周重置。
         if "kimi" in (r.get("name") or "").lower():
@@ -1380,8 +644,9 @@ def _card(r: dict, alert: dict | None = None) -> str:
     elif r.get("stale"):
         pill = "<span class='pill stale'>快照过期</span>"
     else:
+        weekly_rem = _remain_pct(r, "used_pct")
         fp_val = r.get("fiveh_pct")
-        if rem is not None and rem <= 3:
+        if weekly_rem is not None and weekly_rem <= 3:
             pill = "<span class='pill bad'>已用完</span>"
         elif fp_val is not None and fp_val >= 100:
             pill = "<span class='pill bad'>5h 已满</span>"
@@ -1413,13 +678,18 @@ def _summary_strip_html(rows: list[dict], alerts: list[dict]) -> str:
         if r.get("status") != "ok":
             exhausted += 1
             continue
-        rem = _remain_pct(r)
-        if rem is not None:
-            rem_vals.append(rem)
+        weekly_rem = _remain_pct(r, "used_pct")
+        if weekly_rem is not None:
+            rem_vals.append(weekly_rem)
         fp = r.get("fiveh_pct")
-        if (rem is not None and rem <= 3) or (fp is not None and fp >= 100):
+        if (weekly_rem is not None and weekly_rem <= 3) or (fp is not None and fp >= 100):
             exhausted += 1
-        elif r.get("name") in alert_names or (rem is not None and rem <= 20) or r.get("stale"):
+        elif (
+            r.get("name") in alert_names
+            or (weekly_rem is not None and weekly_rem <= 20)
+            or (weekly_rem is None and fp is not None and fp >= 80)
+            or r.get("stale")
+        ):
             warn_count += 1
         else:
             healthy += 1
@@ -1497,15 +767,20 @@ def _load_finance() -> dict:
         return out
     section = ""
     prepaid_public_column = None
+    in_non_ai = False
     for line in text.splitlines():
         if line.startswith("## 一、"):
+            in_non_ai = False
             section = "subs"; continue
         if line.startswith("## 二、"):
+            in_non_ai = False
             section = "ledger"; continue
         if line == "## ChatGPT 预存余额与扣费计划（私密）":
+            in_non_ai = False
             prepaid_public_column = None
             section = "prepaid"; continue
         if line.startswith("## "):
+            in_non_ai = False
             if section in ("subs", "prepaid", "ledger"):
                 section = ""
         if section and line.startswith("|") and "---" not in line:
@@ -1538,7 +813,23 @@ def _load_finance() -> dict:
         m2 = re.search(r"固定订阅总额约\s*\**([\d.]+\s*元/月)", line)
         if m2:
             out["total_all"] = m2.group(1)
-        m3 = re.match(r"^\s*-\s*(iCloud|得到会员|得到大脑会员|微信读书|百度网盘|视频会员)：(.+)$", line)
+        if re.match(r"^\s*-\s*\*{0,2}非 AI 固定订阅\*{0,2}：", line):
+            in_non_ai = True
+            continue
+        if in_non_ai:
+            if line.strip().startswith("- ") and not line.startswith((" ", "\t")):
+                in_non_ai = False
+            elif line.startswith((" ", "\t")):
+                sub_item = re.match(r"^\s*-\s*([^：]+)：(.+)$", line)
+                if sub_item:
+                    out["non_ai"].append(
+                        f"{_strip_md(sub_item.group(1))}：{_strip_md(sub_item.group(2))}"
+                    )
+                    continue
+        m3 = re.match(
+            r"^\s*-\s*(iCloud|得到会员|得到大脑会员|微信读书|百度网盘|视频会员|ikuuu[^：]*)：(.+)$",
+            line,
+        )
         if m3:
             out["non_ai"].append(f"{m3.group(1)}：{_strip_md(m3.group(2))}")
     return out
@@ -1549,7 +840,8 @@ _SVC_ICONS = [
     ("Gemini", "♊"), ("Google", "♊"), ("MiniMax", "🎬"), ("智谱", "🧠"),
     ("ChatGLM", "🧠"), ("Grok", "🚀"), ("中转", "🔀"), ("DeepSeek", "🔍"),
     ("Claude", "🎭"), ("土区", "🪙"), ("TRY", "🪙"), ("VPS", "🖥️"),
-    ("云服务器", "🖥️"), ("域名", "🌐"), ("节点", "🌐"), ("ReadPaper", "📄"),
+    ("云服务器", "🖥️"), ("域名", "🌐"), ("节点", "🌐"), ("ikuuu", "🌐"),
+    ("科学上网", "🌐"), ("ReadPaper", "📄"),
     ("iCloud", "☁️"), ("得到", "🎧"), ("微信读书", "📚"), ("百度网盘", "💾"),
     ("视频", "📺"),
 ]
@@ -1662,6 +954,14 @@ def _sub_status_pill(expiry: str | None, cost: str, renewal: str) -> str:
     return ""
 
 
+def _nonai_expiry_days(desc: str) -> int | None:
+    """提取在续非 AI 订阅的剩余天数；已停续或 0 元白嫖不计入临近到期告警。"""
+    if "不续" in desc or "已到期" in desc or desc.startswith("0 元") or "白嫖" in desc:
+        return None
+    expiry = _extract_expiry_date(desc)
+    return _days_left(expiry) if expiry else None
+
+
 def _subs_kpi_strip_html(
     fin: dict,
     visible_subs: list[dict],
@@ -1679,6 +979,12 @@ def _subs_kpi_strip_html(
         days = _days_left(expiry)
         if days is not None and days < 30:
             expiring.append((days, pub(sub["name"]).split("（", 1)[0].strip()))
+    for raw in fin.get("non_ai", []):
+        text = pub(raw)
+        title, desc = text.split("：", 1) if "：" in text else (text, "")
+        days = _nonai_expiry_days(desc)
+        if days is not None and days < 30:
+            expiring.append((days, title.split("（", 1)[0].strip()))
     expiring.sort()
 
     ai_val = _html_text(pub(fin["total_ai"])) if fin.get("total_ai") else "—"
@@ -1818,21 +1124,37 @@ def _ledger_table_html(ledger: list[dict], pub) -> str:
     )
 
 
+def _ordered_replacements(cfg: dict | None) -> list[tuple[str, str]]:
+    return sorted(
+        ((cfg or {}).get("public_replacements") or {}).items(),
+        key=lambda kv: len(kv[0]),
+        reverse=True,
+    )
+
+
+def _apply_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
+    out = text
+    for src, dst in replacements:
+        out = out.replace(src, dst)
+    return out
+
+
 def _nonai_cards_html(non_ai: list[str], pub) -> str:
     cards = []
     for raw in non_ai:
         text = pub(raw)
         title, desc = text.split("：", 1) if "：" in text else (text, "")
-        expiry = _extract_expiry_date(desc)
+        days = _nonai_expiry_days(desc)
         if "不续" in desc or "已到期" in desc:
             pill = "<span class='cd neutral'>已停续</span>"
         elif desc.startswith("0 元") or "白嫖" in desc:
             pill = "<span class='cd green'>0 元</span>"
         else:
-            pill = _countdown_pill(expiry)
+            pill = _countdown_pill(_extract_expiry_date(desc))
+        urgent_cls = " urgent" if days is not None and days < 30 else ""
         desc_html = f'<div class="nonai-desc">{_html_text(desc)}</div>' if desc else ""
         cards.append(
-            f'<article class="scard nonai-card" aria-label="{_html_text(text)}">'
+            f'<article class="scard nonai-card{urgent_cls}" aria-label="{_html_text(text)}">'
             f'<div class="top"><div class="sname">{_svc_icon(title)} {_html_text(title)}</div>{pill}</div>'
             f'{desc_html}</article>'
         )
@@ -1843,9 +1165,12 @@ def _nonai_cards_html(non_ai: list[str], pub) -> str:
     )
 
 
-def _subs_html(public: bool) -> str:
+def _subs_html(
+    public: bool,
+    replacements: list[tuple[str, str]] | None = None,
+) -> str:
     fin = _load_finance()
-    cfg = _load_finance_config() if public else {}
+    cfg = _load_finance_config() if (public and replacements is None) else {}
     prepaid_accounts = fin.get("prepaid", [])
     if public:
         prepaid_accounts = [
@@ -1855,19 +1180,12 @@ def _subs_html(public: bool) -> str:
     if not fin["subs"] and not fin["ledger"] and not prepaid_accounts:
         return ""
 
-    replacements = sorted(
-        (cfg.get("public_replacements") or {}).items(),
-        key=lambda kv: len(kv[0]),
-        reverse=True,
-    )
+    active_replacements = (
+        replacements if replacements is not None else _ordered_replacements(cfg)
+    ) if public else []
 
     def pub(s: str) -> str:
-        if not public:
-            return s
-        out = s.replace("朋友账号", "朋友账号").replace("朋友", "朋友")
-        for src, dst in replacements:
-            out = out.replace(src, dst)
-        return out
+        return _apply_replacements(s, active_replacements) if public else s
 
     visible_subs = [r for r in fin["subs"] if not _quota_hidden(r["name"])]
     kpi_strip = _subs_kpi_strip_html(fin, visible_subs, prepaid_accounts, pub)
@@ -1887,12 +1205,9 @@ def _subs_html(public: bool) -> str:
     )
 
 
-PUBLIC_LABELS = {
-    "Kimi · 本人（948/年）": "Kimi · 主账号",
-    "Kimi · 副账号": "Kimi · 副账号",
-}
+PUBLIC_LABELS = {"Kimi · 本人（948/年）": "Kimi · 主账号"}
 
-_HIST_PUBLIC = {"Kimi · 本人": "Kimi · 主账号", "Kimi · 副账号": "Kimi · 副账号"}
+_HIST_PUBLIC = {"Kimi · 本人": "Kimi · 主账号"}
 
 
 def _mask_email(text) -> str:
@@ -1900,8 +1215,14 @@ def _mask_email(text) -> str:
     return re.sub(r"([\w.+-])[\w.+-]*(?=@)", r"\1***", str(text))
 
 
-def _public_name(name: str) -> str:
-    return _mask_email(PUBLIC_LABELS.get(name, _HIST_PUBLIC.get(name, name)))
+def _public_name(
+    name: str,
+    replacements: list[tuple[str, str]] | None = None,
+) -> str:
+    mapped = PUBLIC_LABELS.get(name, _HIST_PUBLIC.get(name, name))
+    if replacements:
+        mapped = _apply_replacements(mapped, replacements)
+    return _mask_email(mapped)
 
 
 def _reset_marker_minutes(raw: str | None) -> int | None:
@@ -1948,7 +1269,8 @@ def _daily_deltas(days: int = 7, *, public: bool = False) -> list[tuple[str, lis
     if not LOG_CSV.exists():
         return []
     hidden_names = _public_hidden_codex_names() if public else set()
-    per: dict[tuple[str, str], list[tuple[str, float, str]]] = {}
+    by_day: dict[str, dict[str, list[tuple[str, float, str]]]] = {}
+    dates_by_name: dict[str, list[str]] = {}
     with open(LOG_CSV, encoding="utf-8") as f:
         for r in csv.reader(f):
             if len(r) < 4 or not r[0] or not r[0][0].isdigit() or r[2] != "ok":
@@ -1962,18 +1284,25 @@ def _daily_deltas(days: int = 7, *, public: bool = False) -> list[tuple[str, lis
                 name = "Gemini · Claude"
             if _quota_hidden(name) or name.casefold() in hidden_names:
                 continue
+            day_str = r[0][:10]
             reset = r[5] if len(r) > 5 else ""
-            per.setdefault((r[0][:10], name), []).append((r[0], pct, reset))
-    dates = sorted({d for d, _ in per}, reverse=True)[:days]
+            day_map = by_day.setdefault(day_str, {})
+            if name not in day_map:
+                day_map[name] = []
+                dates_by_name.setdefault(name, []).append(day_str)
+            day_map[name].append((r[0], pct, reset))
+    prev_day_for: dict[tuple[str, str], str] = {}
+    for name, day_list in dates_by_name.items():
+        sorted_days = sorted(day_list)
+        for prev_d, curr_d in zip(sorted_days, sorted_days[1:]):
+            prev_day_for[(curr_d, name)] = prev_d
+    dates = sorted(by_day, reverse=True)[:days]
     out = []
     for d in dates:
         rows = []
-        for (dd, name), snaps in sorted(per.items()):
-            if dd != d:
-                continue
+        for name, snaps in sorted(by_day[d].items()):
             snaps.sort()
-            prev_days = [p for (p, n2) in per if n2 == name and p < d]
-            previous_day = max(prev_days) if prev_days else None
+            previous_day = prev_day_for.get((d, name))
             try:
                 is_consecutive = (
                     previous_day is not None
@@ -1982,7 +1311,7 @@ def _daily_deltas(days: int = 7, *, public: bool = False) -> list[tuple[str, lis
             except ValueError:
                 is_consecutive = False
             if is_consecutive:
-                previous = sorted(per[(previous_day, name)])[-1]
+                previous = sorted(by_day[previous_day][name])[-1]
                 sequence = [previous, *snaps]
                 partial = False
             else:
@@ -2007,11 +1336,14 @@ def _daily_deltas(days: int = 7, *, public: bool = False) -> list[tuple[str, lis
 
 
 def _history_html(public: bool, days: int = 7, controls: bool = False,
-                  more_href: str = "") -> str:
+                  more_href: str = "",
+                  replacements: list[tuple[str, str]] | None = None) -> str:
     """每日消耗柱状图：按天分块，源按消耗降序，纯 CSS 横条。"""
     history_days = _daily_deltas(days=days, public=public)
     if not history_days:
         return ""
+    if public and replacements is None:
+        replacements = _ordered_replacements(_load_finance_config())
     blocks = []
     source_names: set[str] = set()
     for day_index, (d, rows) in enumerate(history_days):
@@ -2021,7 +1353,7 @@ def _history_html(public: bool, days: int = 7, controls: bool = False,
         if shown:
             mx = max(r["delta"] for r in shown)
             for r in sorted(shown, key=lambda x: -x["delta"]):
-                name = _public_name(r["name"]) if public else r["name"]
+                name = _public_name(r["name"], replacements) if public else r["name"]
                 source_names.add(name)
                 w = max(3, round(r["delta"] / mx * 100))
                 tags = ("*" if r["partial"] else "") + (" ↺" if r["reset"] else "")
@@ -2033,7 +1365,7 @@ def _history_html(public: bool, days: int = 7, controls: bool = False,
         else:
             lines.append('<div class="hrow dim">当日未记录到消耗</div>')
         for r in resets:
-            name = _public_name(r["name"]) if public else r["name"]
+            name = _public_name(r["name"], replacements) if public else r["name"]
             source_names.add(name)
             lines.append(
                 f'<div class="hrow dim" data-source="{_html_text(name)}">'
@@ -2060,8 +1392,13 @@ def _history_html(public: bool, days: int = 7, controls: bool = False,
         f'<a class="more-link" href="{_html_text(more_href)}">查看 30 天完整记录 →</a>'
         if more_href else ""
     )
+    empty_box = (
+        '<div id="historyEmpty" class="hday" hidden>'
+        '<div class="hrow dim">所选时间范围内暂无该账号消耗记录</div></div>'
+        if controls else ""
+    )
     return ('<div class="section-head"><h2>📊 每日消耗（周计数口径）</h2>' + more + '</div>'
-            + tools + "".join(blocks)
+            + tools + "".join(blocks) + empty_box
             + '<div class="sub">普通日 = 当天末次快照 − 前一日末次快照；↺ 跨周重置日按重置前后分段相加；'
               '* 底账首日或快照中断后从当天首次快照起算；短时窗口（5h / 当前时段）不计；'
               '底账随快照积累逐日丰富</div>')
@@ -2135,10 +1472,12 @@ def _history_filter_script() -> str:
 (()=>{
   const buttons=[...document.querySelectorAll('[data-days]')];
   const source=document.getElementById('sourceFilter');
+  const emptyBox=document.getElementById('historyEmpty');
   function applyFilters(){
     const limit=Number(document.querySelector('[data-days].active')?.dataset.days || 7);
     const selected=source?.value || '';
-    document.querySelectorAll('.hday').forEach(day=>{
+    let visibleDays=0;
+    document.querySelectorAll('.hday[data-day-index]').forEach(day=>{
       const inRange=Number(day.dataset.dayIndex)<limit;
       let hasVisibleRow=false;
       day.querySelectorAll('.hrow').forEach(row=>{
@@ -2147,7 +1486,9 @@ def _history_filter_script() -> str:
         if(!row.hidden) hasVisibleRow=true;
       });
       day.hidden=!inRange || !hasVisibleRow;
+      if(!day.hidden) visibleDays+=1;
     });
+    if(emptyBox) emptyBox.hidden=visibleDays>0;
   }
   buttons.forEach(button=>button.addEventListener('click',()=>{
     buttons.forEach(other=>other.classList.toggle('active',other===button));
@@ -2161,22 +1502,36 @@ def _history_filter_script() -> str:
 
 def render_html(rows: list[dict], path: Path | None = None, live: bool = False,
                 public: bool = False, page: str = "all") -> str:
-    rows = _visible_quota_rows(rows)
-    if public:
-        hidden_names = _public_hidden_codex_names()
-        rows = [row for row in rows if (row.get("name") or "").casefold() not in hidden_names]
     if page not in {"all", "overview", "history", "subscriptions"}:
         raise ValueError(f"unknown dashboard page: {page}")
+    hidden_names = _public_hidden_codex_names() if public else set()
+    replacements = _ordered_replacements(_load_finance_config()) if public else []
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-    rows = _sort_rows(list(rows))
-    if public:
-        rows = [{**r, "name": _public_name(r["name"])} for r in rows]
-    alerts = _alerts(rows)
-    alert_by_name = {a["name"]: a for a in alerts}
-    cards = "".join(_card(r, alert_by_name.get(r["name"])) for r in rows)
-    banner = _alerts_html(alerts)
-    summary_strip = _summary_strip_html(rows, alerts)
-    live_ui = """
+
+    if page in {"all", "overview"}:
+        visible_rows = _visible_quota_rows(rows)
+        if public:
+            visible_rows = [
+                row for row in visible_rows
+                if (row.get("name") or "").casefold() not in hidden_names
+            ]
+        visible_rows = _sort_rows(list(visible_rows))
+        if public:
+            visible_rows = [
+                {
+                    **r,
+                    "name": _public_name(r["name"], replacements),
+                    **({"note": _apply_replacements(r["note"], replacements)} if r.get("note") else {}),
+                    **({"status": _apply_replacements(r["status"], replacements)} if r.get("status") else {}),
+                }
+                for r in visible_rows
+            ]
+        alerts = _alerts(visible_rows)
+        alert_by_name = {a["name"]: a for a in alerts}
+        cards = "".join(_card(r, alert_by_name.get(r["name"])) for r in visible_rows)
+        banner = _alerts_html(alerts)
+        summary_strip = _summary_strip_html(visible_rows, alerts)
+        live_ui = """
 <div style="margin:14px 0"><button id="rb" onclick="doRefresh()" style="background:linear-gradient(180deg,#2ea043 0%,#238636 100%);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:8px 18px;font-size:13.5px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(35,134,54,.3)">🔄 立即刷新全部额度</button>
 <span id="st" style="font-size:12.5px;color:#8b949e;margin-left:10px"></span></div>
 <script>
@@ -2191,6 +1546,8 @@ async function poll(){
   }catch(e){setTimeout(poll,3000);}
 }
 </script>""" if live else ""
+    else:
+        cards = banner = summary_strip = live_ui = ""
 
     if page == "overview":
         heading = "🤖 AI 额度监控"
@@ -2198,25 +1555,25 @@ async function poll(){
         detail = "卡片按周剩余从小到大"
         content = (
             f'{live_ui}{summary_strip}{banner}<div class="grid">{cards}</div>'
-            f'{_history_html(public, days=2, more_href="history.html")}'
+            f'{_history_html(public, days=2, more_href="history.html", replacements=replacements)}'
         )
     elif page == "history":
         heading = "📊 每日消耗"
         title = "每日消耗 · AI 额度监控"
         detail = "默认最近 7 天，可切换 30 天并按账号筛选"
-        content = _history_html(public, days=30, controls=True) + _history_filter_script()
+        content = _history_html(public, days=30, controls=True, replacements=replacements) + _history_filter_script()
     elif page == "subscriptions":
         heading = "💳 订阅账单"
         title = "订阅账单 · AI 额度监控"
         detail = "订阅、历史充值与非 AI 固定支出"
-        content = _subs_html(public)
+        content = _subs_html(public, replacements=replacements)
     else:
         heading = "🤖 AI 额度监控"
         title = "AI 额度监控"
         detail = "卡片按周剩余从小到大"
         content = (
             f'{live_ui}{summary_strip}{banner}<div class="grid">{cards}</div>'
-            f'{_history_html(public)}{_subs_html(public)}'
+            f'{_history_html(public, replacements=replacements)}{_subs_html(public, replacements=replacements)}'
         )
 
     split_site = page != "all"
@@ -2427,30 +1784,44 @@ _STATE_LOCK = threading.Lock()
 
 def _refresh_state(log: bool = True) -> None:
     try:
-        rows = collect()
-    except sub2api_quota.ConfigError as exc:
+        try:
+            rows = collect()
+        except sub2api_quota.ConfigError as exc:
+            with _STATE_LOCK:
+                if not _STATE["rows"]:
+                    _STATE["rows"] = [{"name": "Sub2API", "status": str(exc)}]
+                else:
+                    _STATE["rows"] = [
+                        {**row, "stale": True, "cache_fallback": True,
+                         "note": "配置无效，保留上次快照"}
+                        if row.get("status") == "ok" else row
+                        for row in _STATE["rows"]
+                    ]
+            return
+        except Exception as exc:  # noqa: BLE001
+            with _STATE_LOCK:
+                if not _STATE["rows"]:
+                    _STATE["rows"] = [{"name": "监控服务", "status": f"刷新失败: {type(exc).__name__}"}]
+                else:
+                    _STATE["rows"] = [
+                        {**row, "stale": True, "cache_fallback": True,
+                         "note": "本次刷新失败，沿用上次快照"}
+                        if row.get("status") == "ok" else row
+                        for row in _STATE["rows"]
+                    ]
+            return
+        with _STATE_LOCK:
+            _STATE["rows"] = rows
+            _STATE["last"] = dt.datetime.now().isoformat(timespec="seconds")
+        if log:
+            append_log(rows)
+        try:
+            render_html(rows, Path(__file__).with_name("quota-dashboard.html"))
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
         with _STATE_LOCK:
             _STATE["updating"] = False
-            if not _STATE["rows"]:
-                _STATE["rows"] = [{"name": "Sub2API", "status": str(exc)}]
-            else:
-                _STATE["rows"] = [
-                    {**row, "stale": True, "cache_fallback": True,
-                     "note": "配置无效，保留上次快照"}
-                    if row.get("status") == "ok" else row
-                    for row in _STATE["rows"]
-                ]
-        return
-    with _STATE_LOCK:
-        _STATE["rows"] = rows
-        _STATE["updating"] = False
-        _STATE["last"] = dt.datetime.now().isoformat(timespec="seconds")
-    if log:
-        append_log(rows)
-    try:
-        render_html(rows, Path(__file__).with_name("quota-dashboard.html"))
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def serve(port: int = 8788) -> None:
@@ -2490,9 +1861,9 @@ def serve(port: int = 8788) -> None:
         def log_message(self, *a):  # 静默
             pass
 
-    threading.Thread(target=_refresh_state, kwargs={"log": True}, daemon=True).start()
     with _STATE_LOCK:
         _STATE["updating"] = True
+    threading.Thread(target=_refresh_state, kwargs={"log": True}, daemon=True).start()
     url = f"http://127.0.0.1:{port}"
     print(f"🤖 额度监控服务已启动：{url}（Ctrl+C 停止）")
     ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
@@ -2527,37 +1898,7 @@ def main() -> int:
     ap.add_argument("--serve", action="store_true", help="启动本地服务，网页上可直接刷新查询")
     ap.add_argument("--port", type=int, default=8788)
     ap.add_argument("--public-html", type=str, default="", help="生成脱敏公开版页面到指定路径")
-    ap.add_argument(
-        "--sync-doubao-chrome",
-        action="store_true",
-        help="从已打开、已登录的 Chrome 豆包额度页读取可见 DOM 并更新本地快照",
-    )
-    ap.add_argument(
-        "--import-doubao-dom",
-        metavar="PATH",
-        help="从 PATH 导入豆包额度页可见文本；使用 - 从标准输入读取",
-    )
     args = ap.parse_args()
-    if args.sync_doubao_chrome:
-        try:
-            snapshot = _sync_doubao_chrome()
-        except Exception as exc:  # noqa: BLE001
-            print(f"豆包额度同步失败：{exc}", file=sys.stderr)
-            return 1
-        print(json.dumps(_doubao_row_from_snapshot(snapshot), ensure_ascii=False, indent=1))
-        return 0
-    if args.import_doubao_dom:
-        try:
-            if args.import_doubao_dom == "-":
-                dom_text = sys.stdin.read()
-            else:
-                dom_text = Path(args.import_doubao_dom).read_text(encoding="utf-8")
-            snapshot = _import_doubao_dom(dom_text)
-        except Exception as exc:  # noqa: BLE001
-            print(f"豆包额度导入失败：{exc}", file=sys.stderr)
-            return 1
-        print(json.dumps(_doubao_row_from_snapshot(snapshot), ensure_ascii=False, indent=1))
-        return 0
     if args.serve:
         serve(args.port)
         return 0
