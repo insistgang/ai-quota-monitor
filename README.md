@@ -8,6 +8,22 @@
 
 概览页打开后每分钟检查新版，并原位更新额度卡片；历史页与订阅页提示有新版，保留当前筛选和阅读状态。网页检查不会触发本机采集，采集仍按上述每小时计划执行。页面顶部时间表示页面生成时间，账号卡片中的“数据”时间表示该来源的实际快照时间。
 
+## 页面预览
+
+以下截图取自 2026-11-15 的公开网页；额度和账单以[线上看板](https://insistgang.top/ai-quota-monitor/)中的最新数据为准。
+
+### 额度概览
+
+![额度概览：监控源统计、刷新提醒和账号额度卡片](docs/assets/dashboard-overview.jpg)
+
+### 每日消耗
+
+![每日消耗：最近 7 天的账号用量、范围切换和账号筛选](docs/assets/daily-history.jpg)
+
+### 订阅账单
+
+![订阅账单：月均费用、到期提醒和在用订阅](docs/assets/subscriptions.jpg)
+
 Sub2API 数据源通过已有 SSH 连接在服务器内查询账号额度，凭据不复制到 Mac。配置与原账号名称的映射放在 `~/.cache/ai-quota-monitor/sub2api.json`。失败或过期的账号单独重试，成功账号不重复查询，配置错误会阻止写入。详见 [Sub2API 额度接入](docs/sub2api-quota.md)。
 
 已移除豆包 Chrome DOM、本机 CLI（`codex-auth`/`mmx`/Kimi API）等旧采集器；旧数据保留在本地底账中按规则隐藏。GitHub 推送最多尝试 3 次、每次限时 60 秒；失败保留待推送提交。
