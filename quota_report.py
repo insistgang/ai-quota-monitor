@@ -1547,7 +1547,9 @@ def _load_finance() -> dict:
 _SVC_ICONS = [
     ("ChatGPT", "🤖"), ("Codex", "⚡"), ("GPT", "⚡"), ("Kimi", "🌙"),
     ("Gemini", "♊"), ("Google", "♊"), ("MiniMax", "🎬"), ("智谱", "🧠"),
-    ("ChatGLM", "🧠"), ("中转", "🔀"), ("DeepSeek", "🔍"), ("Claude", "🎭"),
+    ("ChatGLM", "🧠"), ("Grok", "🚀"), ("中转", "🔀"), ("DeepSeek", "🔍"),
+    ("Claude", "🎭"), ("土区", "🪙"), ("TRY", "🪙"), ("VPS", "🖥️"),
+    ("云服务器", "🖥️"), ("域名", "🌐"), ("节点", "🌐"), ("ReadPaper", "📄"),
     ("iCloud", "☁️"), ("得到", "🎧"), ("微信读书", "📚"), ("百度网盘", "💾"),
     ("视频", "📺"),
 ]
@@ -1664,17 +1666,18 @@ def _subs_kpi_strip_html(
         if not expiry:
             continue
         days = _days_left(expiry)
-        if days is not None and 0 <= days < 30:
+        if days is not None and days < 30:
             expiring.append((days, pub(sub["name"]).split("（", 1)[0].strip()))
     expiring.sort()
 
     ai_val = _html_text(pub(fin["total_ai"])) if fin.get("total_ai") else "—"
     all_val = _html_text(pub(fin["total_all"])) if fin.get("total_all") else "—"
     exp_cls = "warn" if expiring else "ok"
-    exp_sub = (
-        f"最近：{_html_text(expiring[0][1])}（剩 {expiring[0][0]} 天）"
-        if expiring else "未来 30 天无临近到期"
-    )
+    if expiring:
+        days_hint = "已到期" if expiring[0][0] < 0 else f"剩 {expiring[0][0]} 天"
+        exp_sub = f"最近：{_html_text(expiring[0][1])}（{days_hint}）"
+    else:
+        exp_sub = "未来 30 天无临近到期"
     ledger = fin.get("ledger", [])
     latest_date = next(
         (str(item.get("date", "")).strip() for item in reversed(ledger) if item.get("date")),
@@ -1714,7 +1717,7 @@ def _sub_card_html(sub: dict, pub) -> str:
     cost_cls = "scost-main"
     if headline in {"0", "0 元"}:
         cost_cls += " free"
-    elif "不计入" in cost or "免费" in headline:
+    elif "免费" in headline or ("付费" in headline and "不计入" in cost):
         cost_cls += " compact free"
     elif len(headline) > 22:
         cost_cls += " compact long"
@@ -1763,9 +1766,9 @@ def _ledger_table_html(ledger: list[dict], pub) -> str:
     for item in reversed(ledger):
         amount = pub(item["amount"])
         raw_amt = amount.strip()
-        if raw_amt.startswith("-") or "回款" in raw_amt or "冲抵" in raw_amt:
+        if raw_amt.startswith("-") or any(k in raw_amt for k in ("回款", "冲抵", "获赠")):
             amt_cls = "amt credit"
-        elif raw_amt in {"0", "0 元"}:
+        elif raw_amt in {"0", "0 元"} or raw_amt.startswith("0 元"):
             amt_cls = "amt zero"
         else:
             amt_cls = "amt"

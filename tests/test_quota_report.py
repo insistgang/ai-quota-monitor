@@ -953,6 +953,7 @@ class PrepaidSubscriptionTests(unittest.TestCase):
 |------|------|------|------|
 | 2026-02-02 | Kimi Agent | 948 元 | 年费 |
 | 2026-11-04 | GPT 分摊结清 | -240.00 元（回款冲抵） | 冲抵 |
+| 2026-11-07 | DeepSeek API 获赠算力额度 | 0 元（获赠 1,100 元额度） | 赠额 |
 
 ## 四、月度支出估算
 - AI 固定订阅合计（本人实付）：约 270 元/月
@@ -987,10 +988,32 @@ class PrepaidSubscriptionTests(unittest.TestCase):
         self.assertLess(html.index("2026-11-04"), html.index("2026-02-02"))
         self.assertIn("<thead><tr><th>日期</th><th>项目</th><th class=\"amt\">金额</th></tr></thead>", html)
         self.assertIn("<td class='amt credit'>-240.00 元（回款冲抵）</td>", html)
+        self.assertIn("<td class='amt credit'>0 元（获赠 1,100 元额度）</td>", html)
         self.assertIn("<td class='litem'>⚡ GPT 分摊结清</td>", html)
         self.assertIn("💾 百度网盘", html)
         self.assertIn("<span class='cd neutral'>已停续</span>", html)
         self.assertIn("<span class='cd green'>0 元</span>", html)
+
+    def test_expired_subscription_is_counted_in_kpi_warning(self):
+        finance_text = """## 一、当前在用订阅
+| 产品 | 档位/形式 | 费用 | 计费周期 | 刷新/到期时间 | 状态与证据 |
+|------|----------|------|----------|--------------|-----------|
+| 旧订阅 | 月付 | 30 元/月 | 月付 | 2026-11-10 到期 | 确认 |
+"""
+
+        class _FixedDate(quota_report.dt.date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 11, 14)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(finance_text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path), \
+                 mock.patch.object(quota_report.dt, "date", _FixedDate):
+                html = quota_report._subs_html(public=True)
+
+        self.assertIn('<span class="kpi-val">1</span><span class="kpi-sub">最近：旧订阅（已到期）</span>', html)
 
 
 class EmailPrivacyTests(unittest.TestCase):
