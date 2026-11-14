@@ -1545,7 +1545,7 @@ def _load_finance() -> dict:
 
 
 _SVC_ICONS = [
-    ("ChatGPT", "🤖"), ("Codex", "⚡"), ("GPT", "⚡"), ("Kimi", "🌙"),
+    ("ChatGPT", "⚡"), ("Codex", "⚡"), ("GPT", "⚡"), ("Kimi", "🌙"),
     ("Gemini", "♊"), ("Google", "♊"), ("MiniMax", "🎬"), ("智谱", "🧠"),
     ("ChatGLM", "🧠"), ("Grok", "🚀"), ("中转", "🔀"), ("DeepSeek", "🔍"),
     ("Claude", "🎭"), ("土区", "🪙"), ("TRY", "🪙"), ("VPS", "🖥️"),
@@ -1832,7 +1832,7 @@ def _subs_html(public: bool) -> str:
     def pub(s: str) -> str:
         if not public:
             return s
-        out = s.replace("朋友", "朋友")
+        out = s.replace("朋友账号", "朋友账号").replace("朋友", "朋友")
         for src, dst in replacements:
             out = out.replace(src, dst)
         return out
@@ -2280,7 +2280,7 @@ tr:last-child td{{border-bottom:0}}
 .sub-rem,.sub-tag{{font-size:10.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.14);border:1px solid rgba(240,246,252,.06);padding:1px 6px;border-radius:5px}}
 .sub-box .meta{{margin-top:6px;font-size:11.5px;color:#8b949e}}
 .card:hover,.scard:hover{{transform:translateY(-2px);border-color:rgba(88,166,255,.55);box-shadow:0 12px 30px rgba(0,0,0,.38),0 0 0 1px rgba(88,166,255,.12)}}
-.sname{{font-size:15px;font-weight:650;color:#f0f6fc;letter-spacing:-.01em;line-height:1.35;word-break:break-word}}
+.sname{{font-size:14.25px;font-weight:650;color:#f0f6fc;letter-spacing:-.01em;line-height:1.35;overflow-wrap:break-word;text-wrap:balance}}
 .scost-main{{font-size:23px;font-weight:750;color:#58a6ff;letter-spacing:-.02em;line-height:1.25;margin:2px 0 12px;font-variant-numeric:tabular-nums}}
 .scost-main.compact{{font-size:17.5px;line-height:1.35}}
 .scost-main.compact.long{{font-size:15.5px;line-height:1.4}}
