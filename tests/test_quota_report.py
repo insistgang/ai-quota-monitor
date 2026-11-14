@@ -1015,6 +1015,39 @@ class PrepaidSubscriptionTests(unittest.TestCase):
 
         self.assertIn('<span class="kpi-val">1</span><span class="kpi-sub">最近：旧订阅（已到期）</span>', html)
 
+    def test_reserve_prepaid_pool_and_nonrenewing_sub_render_without_urgent_alarm(self):
+        finance_text = """## 一、当前在用订阅
+| 产品 | 档位/形式 | 费用 | 计费周期 | 刷新/到期时间 | 状态与证据 |
+|------|----------|------|----------|--------------|-----------|
+| Google Pro | 土区 | 80 元 | 月付 | 2026-12-05 到期（不续费） | 确认 |
+
+## ChatGPT 预存余额与扣费计划（私密）
+| 账号 | 记录日期 | 预存余额 | 每次扣费 | 可覆盖的扣费日 | 下次需补款的扣费日 | 公开展示名 |
+|------|----------|----------|----------|----------------|--------------------|------------|
+| Apple · 测试账号 | 2026-11-14 | 3,130.07 TRY | — | 原用于 Google Pro，余款留作备用 | 停续留存 | Apple 土区 · 余额池 |
+"""
+
+        class _FixedDate(quota_report.dt.date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 11, 14)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(finance_text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path), \
+                 mock.patch.object(quota_report.dt, "date", _FixedDate):
+                html = quota_report._subs_html(public=True)
+
+        self.assertIn('<span class="kpi-val">0</span><span class="kpi-sub">未来 30 天无临近到期</span>', html)
+        self.assertIn('class="scard sub-card" data-provider="gemini"', html)
+        self.assertIn("剩 21 天·不续", html)
+        self.assertIn("2026-12-05 到期（不续）", html)
+        self.assertIn('class="scard prepaid-card" data-provider="apple"', html)
+        self.assertIn("余额 3,130.07 TRY", html)
+        self.assertIn("<span class='cd neutral'>停续留存</span>", html)
+        self.assertIn("暂不自动扣费", html)
+
 
 class EmailPrivacyTests(unittest.TestCase):
     def test_static_live_and_public_pages_mask_cards_notes_errors_and_alerts(self):

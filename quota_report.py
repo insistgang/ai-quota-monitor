@@ -1605,7 +1605,10 @@ def _short_renewal(s: str) -> str:
     if days:
         parts.append("每月 " + "/".join(days) + " 日")
     if expiry:
-        parts.append(expiry.group(1) + " 到期")
+        exp_text = expiry.group(1) + " 到期"
+        if "不续" in s:
+            exp_text += "（不续）"
+        parts.append(exp_text)
     elif next_debit:
         parts.append("下次扣费 " + next_debit.group(1))
     if parts:
@@ -1643,6 +1646,11 @@ def _countdown_pill(expiry: str | None) -> str:
 
 
 def _sub_status_pill(expiry: str | None, cost: str, renewal: str) -> str:
+    if "不续" in renewal:
+        d = _days_left(expiry) if expiry else None
+        if d is not None and d >= 0:
+            return f"<span class='cd neutral'>剩 {d} 天·不续</span>"
+        return "<span class='cd neutral'>已停续</span>"
     pill = _countdown_pill(expiry)
     if pill:
         return pill
@@ -1662,7 +1670,10 @@ def _subs_kpi_strip_html(
 ) -> str:
     expiring: list[tuple[int, str]] = []
     for sub in visible_subs:
-        expiry = _extract_expiry_date(pub(sub["renewal"]))
+        renewal_text = pub(sub["renewal"])
+        if "不续" in renewal_text:
+            continue
+        expiry = _extract_expiry_date(renewal_text)
         if not expiry:
             continue
         days = _days_left(expiry)
@@ -1710,7 +1721,7 @@ def _sub_card_html(sub: dict, pub) -> str:
     provider_attr = f' data-provider="{provider_key}"' if provider_key else ""
     expiry = _extract_expiry_date(renewal)
     days = _days_left(expiry) if expiry else None
-    urgent_cls = " urgent" if days is not None and days < 30 else ""
+    urgent_cls = " urgent" if days is not None and days < 30 and "不续" not in renewal else ""
     pill = _sub_status_pill(expiry, cost, renewal)
 
     headline, note = _split_cost_headline(cost)
@@ -1741,20 +1752,41 @@ def _prepaid_cards_html(prepaid_accounts: list[dict], pub) -> str:
         return ""
     cards = []
     for account in prepaid_accounts:
-        next_topup = pub(account["next_topup"])
-        pill = _countdown_pill(next_topup if re.fullmatch(r"\d{4}-\d{2}-\d{2}", next_topup) else None)
+        raw_name = account.get("name", "")
+        acct_name = pub(raw_name)
+        is_apple = "apple" in f"{raw_name} {acct_name}".lower()
+        provider_key, badge = (
+            ("apple", "🍎 Apple · 土区余额池")
+            if is_apple else ("codex", "⚡ OpenAI · 土区预存池")
+        )
+        as_of = pub(account["as_of"])
+        debit = pub(account["debit"]).strip()
+        covered = pub(account["covered"]).strip()
+        next_topup = pub(account["next_topup"]).strip()
+        has_schedule = debit not in ("", "—", "-", "无", "暂停")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", next_topup):
+            pill = _countdown_pill(next_topup)
+            foot_html = f'<div class="meta dim">⏳ 需在 {_html_text(next_topup)} 扣费前补款</div>'
+        else:
+            label = next_topup if next_topup and next_topup not in ("—", "-") else "余额留存"
+            pill = f"<span class='cd neutral'>{_html_text(label)}</span>"
+            foot_html = '<div class="meta dim">📌 暂无自动扣费计划</div>'
+        smeta = (
+            f"截至 {_html_text(as_of)} · 每次扣费 {_html_text(debit)}"
+            if has_schedule else f"截至 {_html_text(as_of)} · 暂不自动扣费"
+        )
+        box_label = "可覆盖扣费" if has_schedule else "用途备注"
         cards.append(
-            '<div class="scard prepaid-card" data-provider="codex">'
-            f'<div class="top"><div class="title-wrap"><span class="pbadge">⚡ OpenAI · 土区预存池</span>'
-            f'<div class="sname">{_html_text(pub(account["name"]))}</div></div>{pill}</div>'
+            f'<div class="scard prepaid-card" data-provider="{provider_key}">'
+            f'<div class="top"><div class="title-wrap"><span class="pbadge">{badge}</span>'
+            f'<div class="sname">{_html_text(acct_name)}</div></div>{pill}</div>'
             f'<div class="scost-main">余额 {_html_text(pub(account["balance"]))}</div>'
-            f'<div class="smeta">截至 {_html_text(pub(account["as_of"]))} · 每次扣费 {_html_text(pub(account["debit"]))}</div>'
-            f'<div class="sub-box"><div class="meta">可覆盖扣费：{_html_text(pub(account["covered"]))}</div></div>'
-            f'<div class="meta dim">⏳ 需在 {_html_text(next_topup)} 扣费前补款</div>'
-            '</div>'
+            f'<div class="smeta">{smeta}</div>'
+            f'<div class="sub-box"><div class="meta">{box_label}：{_html_text(covered)}</div></div>'
+            f'{foot_html}</div>'
         )
     return (
-        '<div class="section-head"><h2>💰 ChatGPT 预存余额与扣费计划</h2>'
+        '<div class="section-head"><h2>💰 土区预存余额与扣费计划</h2>'
         f'<span class="section-count">{len(prepaid_accounts)} 个账号</span></div>'
         f'<div class="prepaid-grid">{"".join(cards)}</div>'
         '<div class="sub">TRY 为土耳其里拉。余额为所示日期的人工记录；扣费计划按每次金额不变估算，未来扣款尚未记为支出。</div>'
@@ -2225,7 +2257,7 @@ table{{border-collapse:separate;border-spacing:0;width:100%;background:rgba(22,2
 td{{border-bottom:1px solid rgba(48,54,61,.6);padding:10px 14px;font-size:14px}}
 tr:last-child td{{border-bottom:0}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px;align-items:stretch}}
-.prepaid-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}}
+.prepaid-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px;align-items:stretch}}
 .card,.scard{{position:relative;overflow:hidden;display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(26,32,43,.94) 0%,rgba(16,21,29,.98) 100%);border:1px solid rgba(56,63,73,.78);border-radius:16px;padding:18px 20px;box-shadow:0 6px 22px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.05);transition:transform .2s cubic-bezier(.16,1,.3,1),border-color .2s ease,box-shadow .2s ease}}
 .card::before,.scard::before{{content:"";position:absolute;top:0;left:0;right:0;height:2.5px;background:linear-gradient(90deg,rgba(88,166,255,.65),rgba(88,166,255,.1));opacity:.85}}
 .card[data-provider="codex"]::before,.scard[data-provider="codex"]::before{{background:linear-gradient(90deg,#10b981,#34d399)}}
@@ -2237,6 +2269,7 @@ tr:last-child td{{border-bottom:0}}
 .scard[data-provider="zhipu"]::before{{background:linear-gradient(90deg,#6366f1,#818cf8)}}
 .scard[data-provider="proxy"]::before{{background:linear-gradient(90deg,#f59e0b,#fbbf24)}}
 .scard[data-provider="deepseek"]::before{{background:linear-gradient(90deg,#0ea5e9,#38bdf8)}}
+.scard[data-provider="apple"]::before{{background:linear-gradient(90deg,#94a3b8,#e2e8f0)}}
 .top{{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}}
 .title-wrap{{display:flex;flex-direction:column;gap:4px;min-width:0}}
 .pbadge{{display:inline-flex;align-items:center;gap:4px;width:max-content;font-size:10.5px;font-weight:600;color:#8b949e;background:rgba(110,118,129,.13);border:1px solid rgba(240,246,252,.07);padding:2px 7px;border-radius:6px;letter-spacing:.02em}}
@@ -2249,6 +2282,7 @@ tr:last-child td{{border-bottom:0}}
 [data-provider="zhipu"] .pbadge{{color:#a5b4fc;background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.24)}}
 [data-provider="proxy"] .pbadge{{color:#fcd34d;background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.24)}}
 [data-provider="deepseek"] .pbadge{{color:#7dd3fc;background:rgba(14,165,233,.12);border-color:rgba(14,165,233,.24)}}
+[data-provider="apple"] .pbadge{{color:#e2e8f0;background:rgba(148,163,184,.14);border-color:rgba(148,163,184,.28)}}
 .name{{font-size:15.5px;font-weight:650;color:#f0f6fc;letter-spacing:-.01em;line-height:1.3;word-break:break-word}}
 .win-label{{font-size:11px;font-weight:600;color:#8b949e;letter-spacing:.01em;margin-bottom:2px}}
 .pill{{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;letter-spacing:.02em;flex-shrink:0;border:1px solid transparent;margin-top:2px}}
