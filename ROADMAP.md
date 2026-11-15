@@ -9,6 +9,8 @@
 
 ## 最近完成
 
+- 2026-11-15 13:51 按 README 编写规范重写中英文 README（面向第一次了解项目的读者）：新增「主要功能」「配置」「技术栈与运行环境」三节，补全部 CLI 参数表、私有配置与环境变量表、测试按文件分布明细与「文档最后核对」时间；逐项对照代码后修正 `finance.json` 缺失时的行为描述（实为公开页生成失败，而非只缺订阅内容），并补写 launchd 入口依赖 `QUOTA_MONITOR_HOME` 指向仓库根目录的前提。
+
 - 2026-11-15 06:23 重拍 README 三张页面截图：由 1280×900 视口截图改为整页截图，额度概览从缺 6 张卡片变为完整页面（含 KPI 条、快刷新提醒、9 张卡片与最近两日消耗），每日消耗与订阅账单同样改为整页；为符合公众号图片不超过 2000px 的约束，概览缩放为 1421×2000、订阅账单 1145×2000、每日消耗保持 1440×1799，均为 82 质量 JPEG。
 
 - 2026-11-15 06:14 从私有财务笔记移除 Grok 记录并重新发布：删除订阅表 Grok 行、2026-08-27 的 217.50 元算力充值台账行、两处散文提及与一个 2026-11-02 前关注 SuperGrok 到期的待办；随后执行 `./publish.sh`，生成 06:13 快照（9 个账号）并推送提交 `bbf6925`，GitHub Pages 已构建，线上三页与本地发布产物逐字一致。
@@ -42,6 +44,8 @@
 - 2026-10-04 03:52 修复本地看板显示完整邮箱的问题，同时覆盖提醒、备注、异常、历史记录、筛选项和订阅账单；现有本地快照已打码，额度数值和采集时间未改变。
 
 ## 最近验证
+
+- 2026-11-15 13:51 `validate_readme_pair.py --primary README.md --secondary README_EN.md`：PASS；`python3 -B -m unittest discover -s tests`：117 项通过（10 + 60 + 30 + 17，按文件核对与 README 描述一致）；README 中的命令、参数、路径与环境变量逐项对照 `quota_report.py`、`sub2api_quota.py`、`publish_runtime.py`、`scripts/*.sh` 与 `examples/com.leo.quota-report.plist` 核验；README 标注的文档最后核对时间为 2026-11-15。
 
 - 2026-11-15 06:23 三张截图由 Playwright 对线上 https://insistgang.top/ai-quota-monitor/ 三个页面以 1440×900 视口、`--full-page` 整页拍摄，逐张人工查看确认内容完整、邮箱已打码、页面无 Grok 字样；像素尺寸用 JPEG SOF 标记解析复核，最大边均不超过 2000px；`validate_readme_pair.py`：PASS。
 

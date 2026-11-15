@@ -2,7 +2,7 @@
   <a href="./README.md">简体中文</a> · English
 </p>
 
-<!-- README_SYNC: source=main@85ac18c; updated=2026-11-15 -->
+<!-- README_SYNC: source=main@712cb00; updated=2026-11-15 -->
 
 <div align="center">
 
@@ -11,24 +11,38 @@
 ### Every AI account's quota window, on one board that refreshes every hour
 
 [![GitHub Stars](https://img.shields.io/github/stars/insistgang/ai-quota-monitor?style=for-the-badge&logo=github&label=Stars&color=f5b301)](https://github.com/insistgang/ai-quota-monitor/stargazers)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](#requirements)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](#tech-stack-and-requirements)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Issues](https://img.shields.io/github/issues/insistgang/ai-quota-monitor?style=for-the-badge)](https://github.com/insistgang/ai-quota-monitor/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/insistgang/ai-quota-monitor?style=for-the-badge)](https://github.com/insistgang/ai-quota-monitor/commits/main)
 
 **If it saved you from opening three different clients, a Star helps more people stuck with the same quota anxiety find it.**
 
-<img src="./docs/assets/dashboard-overview.jpg" alt="Overview page: source counters, refresh notice and per-account quota cards" width="100%" />
+<img src="./docs/assets/dashboard-overview.jpg" alt="Full-page quota overview: source counters, refresh notice, all nine account cards and the last two days of spend" width="100%" />
 
 </div>
 
 ## What it is
 
-One command that collects the **weekly quota, 5-hour rolling window and reset time** of several AI coding accounts, and turns them into a terminal table, a local card-style dashboard and three public static pages.
+AI coding quotas live in separate clients and web pages: some only show a 5-hour window, some only a weekly limit, some refuse to tell you what is left at all. Working out which subscription to renew first, and how much this month already cost, means switching windows one by one.
+
+AI Quota Monitor collects those numbers into one table and three web pages: a single command that reads the **weekly quota, 5-hour rolling window and reset time** of several accounts, and renders a terminal table, a local card-style dashboard and three public static pages.
 
 Nothing is scraped from your laptop: quota data is read through an existing SSH connection, read-only, inside the Sub2API server, and Antigravity's weekly window is completed with `agy /usage`. Every query is read-only — no model requests, no quota resets.
 
 **📊 Live snapshot (updated hourly, 9:30–23:30 daily)**: https://insistgang.top/ai-quota-monitor/
+
+## Features
+
+- **One quota vocabulary**: 5-hour windows and weekly limits defined differently by each vendor are normalized into the same fields (weekly used percentage, reset time, optional short window)
+- **See who needs attention first**: cards are ordered by remaining weekly quota; exhausted weekly quotas and nearly empty 5-hour windows get their own alerts
+- **Three outputs**: a terminal table, machine-readable `--json`, and a local card dashboard via `--html`
+- **A daily spend ledger**: `--log` appends snapshots to `quota-log.csv`, and daily spend is still split correctly across a weekly reset
+- **Three public pages**: quota overview, daily spend and subscriptions, masked and published to GitHub Pages
+- **Subscriptions and billing**: AI subscriptions next to non-AI renewals (such as `ikuuu`), plus ChatGPT prepaid balance and deduction plans
+- **Scheduled publishing**: macOS launchd runs it hourly — collect → write ledger → refresh the three pages → push, all through a single entry point
+- **Graceful degradation**: when one source fails, the last valid snapshot is kept and labelled with the reason instead of pretending to be live or writing 0%
+- **Privacy isolation**: public pages mask emails by default and strip real names, bank names and private nicknames; the ledger and local dashboard stay on your machine
 
 ## What you do without it
 
@@ -72,7 +86,7 @@ python3 quota_report.py --html     # build the local card dashboard
 open quota-dashboard.html           # open it in a browser
 ```
 
-To collect real data you also need the private Sub2API mapping at `~/.cache/ai-quota-monitor/sub2api.json` (mode `0600`). When it is missing, the program fails loudly and refuses to write instead of publishing an empty snapshot. See [Sub2API quota access](docs/sub2api-quota.md) (Chinese) for the setup.
+To collect real data you also need the private Sub2API mapping at `~/.cache/ai-quota-monitor/sub2api.json` (mode `0600`). When it is missing, the program fails loudly with exit code 2 instead of publishing an empty snapshot. The configuration structure and the server permissions are described in [Sub2API quota access](docs/sub2api-quota.md) (Chinese).
 
 Common commands:
 
@@ -84,6 +98,44 @@ python3 quota_report.py --html     # render quota-dashboard.html
 python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 with a refresh button
 ./publish.sh                       # collect + render public pages + push to GitHub Pages
 ```
+
+The remaining flags:
+
+| Flag | What it does |
+| --- | --- |
+| `--public-html <path>` | Renders the masked public pages; also writes `history.html` and `subscriptions.html` next to it |
+| `--port <port>` | Used with `--serve`, default `8788` |
+| `--retry-failures <n>` | Extra retries for unhealthy sources |
+| `--retry-delay <seconds>` | Delay between retries, default `15` |
+| `--max-unhealthy <n>` | Cancel this write when more than n sources failed or fell back to cache; a negative value disables the limit |
+
+## Configuration
+
+The program ships without any credentials. Every private configuration lives under `~/.cache/ai-quota-monitor/` on your machine with mode `0600`, and none of them enters the repository:
+
+| File | Purpose | Behaviour when missing |
+| --- | --- | --- |
+| `sub2api.json` | SSH alias, account IDs, platforms and display names | The command fails and exits without writing anything |
+| `public-hidden-accounts.json` | Accounts that must not be published | Public page generation stops |
+| `finance.json` | Path to the finance note and the public masking map | Public page generation stops |
+| `last-good.json` | The most recent successful snapshot | With no cache to fall back on, publishing is blocked |
+| `agy-groups.json` | Cached Antigravity model groups | The groups are queried again |
+
+Paths and behaviour can be overridden with environment variables:
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `QUOTA_SUB2API_CONFIG` | Path to the Sub2API config | `~/.cache/ai-quota-monitor/sub2api.json` |
+| `QUOTA_PUBLIC_HIDDEN_ACCOUNTS` | Path to the hidden-account list | `~/.cache/ai-quota-monitor/public-hidden-accounts.json` |
+| `QUOTA_FINANCE_CONFIG` | Path to the finance config | `~/.cache/ai-quota-monitor/finance.json` |
+| `QUOTA_FINANCE_MD` | Path to the finance note (Markdown) | The `finance_md` field inside `finance.json` |
+| `QUOTA_LAST_GOOD` | Path to the last successful snapshot cache | `~/.cache/ai-quota-monitor/last-good.json` |
+| `QUOTA_AGY_GROUPS_CACHE` | Path to the Antigravity group cache | `~/.cache/ai-quota-monitor/agy-groups.json` |
+| `QUOTA_MONITOR_HOME` | Repository root (used by the launchd entry) | `~/Desktop/个人工具/ai-quota-monitor` |
+| `QUOTA_RUNTIME_BIN_DIR` | Where the launchd entry is installed | `~/.local/bin` |
+| `QUOTA_PYTHON_BIN` | Python interpreter to use | `python3` |
+
+If the finance note itself is missing or unreadable, the public pages still render — they just carry no subscription or billing data.
 
 ## Which accounts are covered
 
@@ -106,17 +158,21 @@ cp examples/com.leo.quota-report.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 ```
 
-By default it runs **hourly from 9:30 to 23:30** (15 runs a day). launchd calls `~/.local/bin/quota-publish` (deliberately not in a Documents folder, to avoid macOS TCC interception), which opens the single `publish_runtime.py` inside the repository and runs collection, CSV writing, the three HTML pages and the push. Running `./publish.sh` by hand enters the same Python entry point, so there is exactly one publishing path. Missed runs while the Mac sleeps are caught up after wake.
+By default it runs **hourly from 9:30 to 23:30** (15 runs a day). launchd calls `~/.local/bin/quota-publish` (deliberately not in a Documents folder, to avoid macOS TCC interception), which opens the single `publish_runtime.py` inside the repository and runs collection, CSV writing, the three HTML pages and the push. Running `./publish.sh` by hand enters the same Python entry point, so there is exactly one publishing path.
 
-launchd writes stdout/stderr to `~/Library/Logs/ai-quota-monitor/`, which the install command creates for you. Keep the entry point and the logs out of `Documents`, otherwise macOS TCC/System Policy can block the script before it even starts.
+A few things to know:
+
+- `/Users/YOURNAME` appears three times in the plist (entry script and both log paths); replace all of them
+- The entry script assumes the repository lives in `~/Desktop/个人工具/ai-quota-monitor`; if you cloned it elsewhere, point `QUOTA_MONITOR_HOME` at it
+- Missed runs while the Mac sleeps are caught up after wake; during shutdown nothing runs, and the next scheduled time takes over after login
+- launchd writes stdout/stderr to `~/Library/Logs/ai-quota-monitor/`, which the install command creates for you. Keep the entry point and the logs out of `Documents`, otherwise macOS TCC/System Policy can block the script before it even starts
 
 ## Privacy and security
 
 - Only read-only quota endpoints are queried inside the Sub2API server; plans, reset policies and model traffic are never touched
 - Keys, tokens and admin password digests are never printed or cached; short-lived server-side credentials exist only in the collector process memory, and SSH brings back nothing but the allowed quota fields
-- The local dashboard, the live server and the public pages mask emails by default (for example `f***@163.com`); public pages additionally apply `public_replacements` from `~/.cache/ai-quota-monitor/finance.json` to strip real names, bank names and private account nicknames, while the local ledger keeps the original identifiers for continuous statistics
+- The local dashboard, the live server and the public pages mask emails by default (for example `f***@163.com`); public pages additionally apply `public_replacements` from `finance.json` to strip real names, bank names and private account nicknames, while the local ledger keeps the original identifiers for continuous statistics
 - `quota-log.csv` and `quota-dashboard.html` contain your usage data and are excluded by `.gitignore`, so they cannot leak into the repository
-- The hidden-account list lives in `~/.cache/ai-quota-monitor/public-hidden-accounts.json` (mode `0600`); if it is missing or invalid, public page generation stops
 
 ## Semantics and limits
 
@@ -126,7 +182,17 @@ launchd writes stdout/stderr to `~/Library/Logs/ai-quota-monitor/`, which the in
 - When collection fails, the last valid snapshot is kept and labelled with the failure reason — no pretending to be live, and no writing it as 0%
 - GitHub pushes are retried up to 3 times with a 60-second timeout each; on failure the local commit is kept and the next scheduled run pushes it
 
-The full data flow, calculation rules, scheduling, failure handling and privacy design are described in [project design notes](docs/project-design.md) (Chinese).
+## Tech stack and requirements
+
+| Piece | Where it is used | Notes |
+| --- | --- | --- |
+| Python 3.10+ | `quota_report.py`, `sub2api_quota.py`, `publish_runtime.py` | Standard library only, no `pip install` |
+| Bash | `publish.sh`, `scripts/*.sh` | Manual publishing and the launchd entry |
+| SSH | From your machine to the Sub2API server | Non-interactive login that runs the restricted query script there |
+| Sub2API | The quota source | The server needs Python 3, Docker and permission to read `sub2api-db` |
+| `tmux` + `agy` | Antigravity weekly window | `agy /usage` is a probe that consumes nothing |
+| macOS launchd | Scheduled publishing | Hourly from 9:30 to 23:30 |
+| GitHub Pages | The three public pages | Built from the `docs/` directory of the `main` branch |
 
 ## Repository layout
 
@@ -134,30 +200,28 @@ The full data flow, calculation rules, scheduling, failure handling and privacy 
 ai-quota-monitor/
 ├── quota_report.py              # Sub2API normalization, Antigravity weekly window, daily math, HTML rendering
 ├── sub2api_quota.py             # private mapping, SSH reads, window validation, per-account retry
+├── publish_runtime.py           # the single render, commit and push flow
+├── publish.sh                   # manual publishing entry point
 ├── scripts/
 │   ├── sub2api_quota_snapshot.py    # restricted usage query inside the server, returns no credentials
 │   ├── quota-publish-launchd.sh     # stable launchd entry point outside Documents
-│   └── install-launchd-runtime.sh
-├── publish_runtime.py           # the single render, commit and push flow
-├── publish.sh                   # manual publishing entry point
+│   └── install-launchd-runtime.sh   # installs the entry script and creates the log directory
 ├── docs/
 │   ├── index.html               # quota overview
 │   ├── history.html             # daily spend
 │   ├── subscriptions.html       # subscriptions and billing
-│   ├── project-design.md        # data flow and calculation rules
-│   ├── sub2api-quota.md         # Sub2API access and permission boundary
+│   ├── project-design.md        # data flow, calculation rules, failure handling and privacy design
+│   ├── sub2api-quota.md         # Sub2API access, permission boundary and configuration structure
 │   └── assets/                  # real screenshots used by this README
 ├── examples/
-│   └── com.leo.quota-report.plist
-└── tests/                       # 117 regression tests for quota math, privacy, HTML escaping and publishing
+│   └── com.leo.quota-report.plist  # launchd schedule template
+├── tests/                       # 117 regression tests (4 files)
+├── README.md / README_EN.md     # Chinese and English documentation
+├── ROADMAP.md                   # progress and verification log
+└── LICENSE
 ```
 
-## Requirements
-
-- macOS + Python 3.10+ (standard library only, nothing to pip install)
-- Sub2API: an existing non-interactive SSH login, with Python 3, Docker and read access to the Sub2API database on the server
-- Antigravity weekly window: `tmux` plus a logged-in `agy`
-- Scheduled publishing: macOS launchd
+Two runtime artifacts are not tracked: `quota-log.csv` (the daily ledger) and `quota-dashboard.html` (the local dashboard). Both are excluded by `.gitignore`.
 
 ## Development and tests
 
@@ -167,7 +231,9 @@ python3 -m py_compile quota_report.py sub2api_quota.py publish_runtime.py script
 bash -n publish.sh scripts/*.sh
 ```
 
-117 tests cover quota calculations, daily-spend segmentation, masking and public replacements, HTML escaping, failure degradation and the publishing flow. The full acceptance checklist lives in [project design notes](docs/project-design.md) (Chinese).
+The 117 tests are spread over four files: `test_quota_report.py` (60 — quota math, masking, HTML escaping), `test_sub2api_quota.py` (30 — window normalization and retries), `test_sub2api_remote.py` (17 — remote reads) and `test_publish_runtime.py` (10 — publishing flow). The full acceptance checklist lives in [project design notes](docs/project-design.md) (Chinese).
+
+> Every command, flag and path in this README was checked against the current code. Last reviewed: 2026-11-15.
 
 ## License
 

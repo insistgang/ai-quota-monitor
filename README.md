@@ -2,7 +2,7 @@
   简体中文 · <a href="./README_EN.md">English</a>
 </p>
 
-<!-- README_SYNC: source=main@85ac18c; updated=2026-11-15 -->
+<!-- README_SYNC: source=main@712cb00; updated=2026-11-15 -->
 
 <div align="center">
 
@@ -11,24 +11,38 @@
 ### 把散在多个 AI 账号里的额度窗口，收进一张每小时更新的看板
 
 [![GitHub Stars](https://img.shields.io/github/stars/insistgang/ai-quota-monitor?style=for-the-badge&logo=github&label=Stars&color=f5b301)](https://github.com/insistgang/ai-quota-monitor/stargazers)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](#依赖)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](#技术栈与运行环境)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Issues](https://img.shields.io/github/issues/insistgang/ai-quota-monitor?style=for-the-badge)](https://github.com/insistgang/ai-quota-monitor/issues)
 [![Last Commit](https://img.shields.io/github/last-commit/insistgang/ai-quota-monitor?style=for-the-badge)](https://github.com/insistgang/ai-quota-monitor/commits/main)
 
 **如果它替你少开了三个客户端面板，点个 Star，让更多被额度折磨的人找到它。**
 
-<img src="./docs/assets/dashboard-overview.jpg" alt="额度概览页：监控源统计、刷新提醒和各账号额度卡片" width="100%" />
+<img src="./docs/assets/dashboard-overview.jpg" alt="额度概览整页：监控源统计、刷新提醒、9 张账号卡片与最近两日消耗" width="100%" />
 
 </div>
 
 ## 这是什么
 
-一条命令汇总多个 AI 编程账号的**周额度、5 小时短时窗口和重置时间**，同时产出终端表格、本地卡片式仪表盘和三个公开静态页。
+AI 编程账号的额度散在各个客户端和网页里：有的只显示 5 小时窗口，有的只给周额度，有的干脆不告诉你还剩多少。要弄清「该先续哪个、这个月用了多少」，只能一个个切窗口去看。
 
-数据不在本机采集：额度经已有 SSH 连接在 Sub2API 服务器内只读查询，Antigravity 额外用 `agy /usage` 补全 Gemini / Claude 组的周窗口。全程只读，不发送模型任务、不触发额度重置。
+AI Quota Monitor 把这些数字收成一张表和三个网页：一条命令汇总多个账号的**周额度、5 小时短时窗口和重置时间**，同时产出终端表格、本地卡片式仪表盘和三个公开静态页。
+
+数据不在你的电脑上采集：额度经已有 SSH 连接在 Sub2API 服务器内只读查询，Antigravity 额外用 `agy /usage` 补全 Gemini / Claude 组的周窗口。全程只读，不发送模型任务、不触发额度重置。
 
 **📊 线上快照（每天 9:30–23:30 每小时更新）**：https://insistgang.top/ai-quota-monitor/
+
+## 主要功能
+
+- **统一额度口径**：把各供应商不同定义的 5 小时窗、周窗口归一化成同一套字段（周已用百分比、重置时间、可选短时窗口）
+- **一眼看出该管谁**：卡片按周剩余从少到多排列；周额度见底或 5 小时窗接近耗尽时单独提醒
+- **三种输出**：终端表格、机器可读的 `--json`、本地卡片看板 `--html`
+- **每日消耗底账**：`--log` 追加快照到 `quota-log.csv`，跨周重置也能分段算出真实日均
+- **公开三页**：额度概览、每日消耗、订阅账单，脱敏后发布到 GitHub Pages
+- **订阅账单**：AI 订阅与非 AI 续费（如 `ikuuu`）到期提醒，ChatGPT 预存余额与扣费计划
+- **定时发布**：macOS launchd 每小时跑一次，采集 → 写底账 → 刷新三页 → 推送，全程只有一个入口
+- **失败降级**：某个源读不到时保留上次有效快照并标注原因，不伪装实时，也不写成 0%
+- **隐私隔离**：公开页默认打码邮箱并剔除实名、银行与私有昵称；底账和本地看板留在本机，不进仓库
 
 ## 不用它，你要做什么
 
@@ -72,7 +86,7 @@ python3 quota_report.py --html     # build the local card dashboard
 open quota-dashboard.html           # open it in a browser
 ```
 
-要在真实环境采集，还需要先配置 Sub2API 私有映射（`~/.cache/ai-quota-monitor/sub2api.json`，权限 `0600`）；配置缺失时程序会直接报错并拒绝写入，不会拿空数据凑一份快照。做法见 [Sub2API 额度接入](docs/sub2api-quota.md)。
+要在真实环境采集，还需要先配置 Sub2API 私有映射（`~/.cache/ai-quota-monitor/sub2api.json`，权限 `0600`）。配置缺失时程序会直接报错并以退出码 2 结束，不会拿空数据凑一份快照。配置结构与服务器权限要求见 [Sub2API 额度接入](docs/sub2api-quota.md)。
 
 常用命令：
 
@@ -85,7 +99,45 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 ./publish.sh                       # collect + render public pages + push to GitHub Pages
 ```
 
-## 监控哪些账号
+其余参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--public-html <路径>` | 生成脱敏公开版页面。会额外写出同目录的 `history.html` 与 `subscriptions.html` |
+| `--port <端口>` | 配合 `--serve`，默认 `8788` |
+| `--retry-failures <次数>` | 对异常来源额外重试的次数 |
+| `--retry-delay <秒>` | 重试间隔，默认 `15` |
+| `--max-unhealthy <数量>` | 超过此数量的来源失败或走缓存时取消本次写入；负数表示不限制 |
+
+## 配置
+
+程序本身不带任何凭据。所有私有配置都在本机 `~/.cache/ai-quota-monitor/` 下，权限应为 `0600`，均不进入仓库：
+
+| 文件 | 作用 | 缺失时的行为 |
+| --- | --- | --- |
+| `sub2api.json` | SSH 别名、账号 ID、平台与看板名称映射 | 命令行报错退出，不写入任何数据 |
+| `public-hidden-accounts.json` | 不公开的账号名单 | 停止生成公开页面 |
+| `finance.json` | 财务笔记路径与公开脱敏映射 | 公开页生成失败 |
+| `last-good.json` | 最近一次成功快照 | 采集失败时无可用缓存，直接阻断发布 |
+| `agy-groups.json` | Antigravity 模型分组缓存 | 重新查询分组 |
+
+可用环境变量改路径或行为：
+
+| 环境变量 | 作用 | 默认值 |
+| --- | --- | --- |
+| `QUOTA_SUB2API_CONFIG` | Sub2API 私有配置路径 | `~/.cache/ai-quota-monitor/sub2api.json` |
+| `QUOTA_PUBLIC_HIDDEN_ACCOUNTS` | 公开过滤名单路径 | `~/.cache/ai-quota-monitor/public-hidden-accounts.json` |
+| `QUOTA_FINANCE_CONFIG` | 财务私有配置路径 | `~/.cache/ai-quota-monitor/finance.json` |
+| `QUOTA_FINANCE_MD` | 财务笔记路径（Markdown） | 由 `finance.json` 中的 `finance_md` 指定 |
+| `QUOTA_LAST_GOOD` | 最近成功快照缓存路径 | `~/.cache/ai-quota-monitor/last-good.json` |
+| `QUOTA_AGY_GROUPS_CACHE` | Antigravity 分组缓存路径 | `~/.cache/ai-quota-monitor/agy-groups.json` |
+| `QUOTA_MONITOR_HOME` | 仓库根目录（launchd 入口用） | `~/Desktop/个人工具/ai-quota-monitor` |
+| `QUOTA_RUNTIME_BIN_DIR` | launchd 入口安装目录 | `~/.local/bin` |
+| `QUOTA_PYTHON_BIN` | 使用的 Python 解释器 | `python3` |
+
+财务笔记（Markdown）本身缺失或读不到时，公开页仍会生成，只是没有订阅与账单内容。
+
+## 支持的数据源
 
 | 源 | 取数方式 |
 |---|---|
@@ -106,17 +158,21 @@ cp examples/com.leo.quota-report.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 ```
 
-默认每天 **9:30–23:30 每小时一次**（共 15 次）。launchd 调用 `~/.local/bin/quota-publish`（不放在文稿目录，避免 macOS TCC 拦截），再由 Python 打开仓库内唯一的 `publish_runtime.py`，执行采集、写 CSV、刷新三个 HTML 页面并推送。手动运行 `publish.sh` 也走同一个 Python 入口，因此没有两份发布逻辑。电脑睡着错过会在唤醒后补跑。
+默认每天 **9:30–23:30 每小时一次**（共 15 次）。launchd 调用 `~/.local/bin/quota-publish`（不放在文稿目录，避免 macOS TCC 拦截），再由 Python 打开仓库内唯一的 `publish_runtime.py`，执行采集、写 CSV、刷新三个 HTML 页面并推送。手动运行 `publish.sh` 也走同一个 Python 入口，因此没有两份发布逻辑。
 
-launchd 的 stdout/stderr 默认写入 `~/Library/Logs/ai-quota-monitor/`；安装命令会预先创建该目录。入口和日志都不要放进 `Documents`，否则 Mac 重启后可能被 TCC/System Policy 在脚本启动前拦截。
+几点需要注意：
+
+- plist 里的 `/Users/YOURNAME` 有三处（入口脚本、日志路径），安装时要全部替换成你的用户名
+- 入口脚本默认认为仓库在 `~/Desktop/个人工具/ai-quota-monitor`；克隆到别的位置时，用 `QUOTA_MONITOR_HOME` 指过去
+- 睡眠期间错过的时间点会在唤醒后补跑；关机期间不会运行，开机后等下一个计划时间
+- launchd 的 stdout/stderr 写入 `~/Library/Logs/ai-quota-monitor/`，安装命令会预先创建该目录；入口和日志都不要放进 `Documents`，否则 Mac 重启后可能被 TCC/System Policy 在脚本启动前拦截
 
 ## 隐私与安全
 
 - 只在 Sub2API 服务器内查询只读额度接口，不更改套餐、重置策略或发送模型消息
 - 不打印或缓存 key、token、管理员密码摘要；服务器内短期认证只存在于采集进程内存，SSH 只带回允许的额度字段
-- 本地静态看板、实时服务和公开网页均默认打码邮箱（如 `f***@163.com`），公开页额外应用 `~/.cache/ai-quota-monitor/finance.json` 的 `public_replacements` 剔除实名、银行与私有账号昵称；本地底账保留原始账号标识用于连续统计
+- 本地静态看板、实时服务和公开网页均默认打码邮箱（如 `f***@163.com`），公开页额外应用 `finance.json` 的 `public_replacements` 剔除实名、银行与私有账号昵称；本地底账保留原始账号标识用于连续统计
 - `quota-log.csv`、`quota-dashboard.html` 含你的用量数据，已在 `.gitignore` 排除，不会误传
-- 公开过滤名单位于 `~/.cache/ai-quota-monitor/public-hidden-accounts.json`（权限 `0600`），配置缺失或无效时停止生成公开页面
 
 ## 口径与边界
 
@@ -126,7 +182,17 @@ launchd 的 stdout/stderr 默认写入 `~/Library/Logs/ai-quota-monitor/`；安�
 - 采集失败时保留最后一份有效快照并标明失败原因，不伪装实时，也不写成 0%
 - GitHub 推送最多尝试 3 次、每次限时 60 秒；失败保留本地待推送提交，等下一个计划任务补发
 
-完整的数据流、计算口径、定时发布、容错和隐私设计见 [项目流程与设计说明](docs/project-design.md)。
+## 技术栈与运行环境
+
+| 组成 | 用在哪里 | 说明 |
+| --- | --- | --- |
+| Python 3.10+ | `quota_report.py`、`sub2api_quota.py`、`publish_runtime.py` | 只用标准库，不需要 `pip install` |
+| Bash | `publish.sh`、`scripts/*.sh` | 手动发布与 launchd 入口 |
+| SSH | 本机 → Sub2API 服务器 | 无交互登录，把受限查询脚本送过去执行 |
+| Sub2API | 额度来源 | 需服务器上 Python 3、Docker 与读取 `sub2api-db` 的权限 |
+| `tmux` + `agy` | Antigravity 周窗口补全 | `agy /usage` 为无消耗状态探针 |
+| macOS launchd | 定时发布 | 每天 9:30–23:30 每小时一次 |
+| GitHub Pages | 公开三页 | 从 `main` 分支的 `docs/` 目录构建 |
 
 ## 项目结构
 
@@ -134,30 +200,28 @@ launchd 的 stdout/stderr 默认写入 `~/Library/Logs/ai-quota-monitor/`；安�
 ai-quota-monitor/
 ├── quota_report.py              # Sub2API 归一化、Antigravity 周窗口补全、每日计算、HTML 生成
 ├── sub2api_quota.py             # 私有映射、SSH 读取、窗口校验、账号级重试
+├── publish_runtime.py           # 唯一的生成、提交、推送流程
+├── publish.sh                   # 手动发布入口
 ├── scripts/
 │   ├── sub2api_quota_snapshot.py    # 服务器内受限用量查询，不返回凭据
 │   ├── quota-publish-launchd.sh     # 安装到 Documents 外的稳定 launchd 入口
-│   └── install-launchd-runtime.sh
-├── publish_runtime.py           # 唯一的生成、提交、推送流程
-├── publish.sh                   # 手动发布入口
+│   └── install-launchd-runtime.sh   # 安装入口脚本并创建日志目录
 ├── docs/
 │   ├── index.html               # 额度概览
 │   ├── history.html             # 每日消耗
 │   ├── subscriptions.html       # 订阅账单
-│   ├── project-design.md        # 数据流与口径说明
-│   ├── sub2api-quota.md         # Sub2API 接入与权限边界
+│   ├── project-design.md        # 数据流、计算口径、容错与隐私设计
+│   ├── sub2api-quota.md         # Sub2API 接入、权限边界与配置结构
 │   └── assets/                  # README 用的真实页面截图
 ├── examples/
-│   └── com.leo.quota-report.plist
-└── tests/                       # 117 项额度计算、隐私、HTML 转义与发布回归测试
+│   └── com.leo.quota-report.plist  # launchd 计划任务模板
+├── tests/                       # 117 项回归测试
+├── README.md / README_EN.md     # 中英文说明
+├── ROADMAP.md                   # 进度与验证记录
+└── LICENSE
 ```
 
-## 依赖
-
-- macOS + Python 3.10+（只用标准库，无需 pip 安装）
-- Sub2API：已有无交互 SSH 登录，服务器具备 Python 3、Docker 和读取 Sub2API 数据库的权限
-- Antigravity 周窗口补全：`tmux` + 已登录 `agy`
-- 定时发布：macOS launchd
+运行后额外产生两个不入库的产物：`quota-log.csv`（每日底账）和 `quota-dashboard.html`（本地看板），两者都已在 `.gitignore` 中排除。
 
 ## 本地开发与测试
 
@@ -167,7 +231,9 @@ python3 -m py_compile quota_report.py sub2api_quota.py publish_runtime.py script
 bash -n publish.sh scripts/*.sh
 ```
 
-117 项测试覆盖额度计算口径、每日消耗分段、脱敏与公开替换、HTML 转义、失败降级和发布流程。完整验收清单见 [项目流程与设计说明](docs/project-design.md)。
+117 项测试分布在四个文件：`test_quota_report.py`（60 项，额度计算、脱敏、HTML 转义）、`test_sub2api_quota.py`（30 项，窗口归一化与重试）、`test_sub2api_remote.py`（17 项，远程读取）、`test_publish_runtime.py`（10 项，发布流程）。完整验收清单见 [项目流程与设计说明](docs/project-design.md)。
+
+> 本 README 的命令、参数和路径均对照当前代码核对，文档最后核对时间：2026-11-15。
 
 ## License
 
