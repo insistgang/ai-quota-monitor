@@ -2,7 +2,7 @@
   简体中文 · <a href="./README_EN.md">English</a>
 </p>
 
-<!-- README_SYNC: source=main@712cb00; updated=2026-11-15 -->
+<!-- README_SYNC: source=working-tree; updated=2026-11-17 -->
 
 <div align="center">
 
