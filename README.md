@@ -215,7 +215,7 @@ ai-quota-monitor/
 │   └── assets/                  # README 用的真实页面截图
 ├── examples/
 │   └── com.leo.quota-report.plist  # launchd 计划任务模板
-├── tests/                       # 117 项回归测试
+├── tests/                       # 118 项回归测试
 ├── README.md / README_EN.md     # 中英文说明
 ├── ROADMAP.md                   # 进度与验证记录
 └── LICENSE
@@ -231,7 +231,7 @@ python3 -m py_compile quota_report.py sub2api_quota.py publish_runtime.py script
 bash -n publish.sh scripts/*.sh
 ```
 
-117 项测试分布在四个文件：`test_quota_report.py`（60 项，额度计算、脱敏、HTML 转义）、`test_sub2api_quota.py`（30 项，窗口归一化与重试）、`test_sub2api_remote.py`（17 项，远程读取）、`test_publish_runtime.py`（10 项，发布流程）。完整验收清单见 [项目流程与设计说明](docs/project-design.md)。
+118 项测试分布在四个文件：`test_quota_report.py`（61 项，额度计算、脱敏、HTML 转义）、`test_sub2api_quota.py`（30 项，窗口归一化与重试）、`test_sub2api_remote.py`（17 项，远程读取）、`test_publish_runtime.py`（10 项，发布流程）。完整验收清单见 [项目流程与设计说明](docs/project-design.md)。
 
 > 本 README 的命令、参数和路径均对照当前代码核对，文档最后核对时间：2026-11-15。
 

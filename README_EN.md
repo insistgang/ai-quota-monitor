@@ -215,7 +215,7 @@ ai-quota-monitor/
 │   └── assets/                  # real screenshots used by this README
 ├── examples/
 │   └── com.leo.quota-report.plist  # launchd schedule template
-├── tests/                       # 117 regression tests (4 files)
+├── tests/                       # 118 regression tests (4 files)
 ├── README.md / README_EN.md     # Chinese and English documentation
 ├── ROADMAP.md                   # progress and verification log
 └── LICENSE
@@ -231,7 +231,7 @@ python3 -m py_compile quota_report.py sub2api_quota.py publish_runtime.py script
 bash -n publish.sh scripts/*.sh
 ```
 
-The 117 tests are spread over four files: `test_quota_report.py` (60 — quota math, masking, HTML escaping), `test_sub2api_quota.py` (30 — window normalization and retries), `test_sub2api_remote.py` (17 — remote reads) and `test_publish_runtime.py` (10 — publishing flow). The full acceptance checklist lives in [project design notes](docs/project-design.md) (Chinese).
+The 118 tests are spread over four files: `test_quota_report.py` (61 — quota math, masking, HTML escaping), `test_sub2api_quota.py` (30 — window normalization and retries), `test_sub2api_remote.py` (17 — remote reads) and `test_publish_runtime.py` (10 — publishing flow). The full acceptance checklist lives in [project design notes](docs/project-design.md) (Chinese).
 
 > Every command, flag and path in this README was checked against the current code. Last reviewed: 2026-11-15.
 
