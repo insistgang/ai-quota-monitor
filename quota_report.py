@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """quota_report.py — AI 额度监控表（查询用量，不发送模型任务或主动重置额度）
 
-所有监控来源均通过 Sub2API 在服务器只读读取；Antigravity 分组额度按需补充本机
-`agy /usage` 面板的周重置周期。
+Codex、Kimi、MiniMax 通过 Sub2API 读取，Antigravity 共享额度由本机 agy CLI 读取。
 
 用法：
   python3 quota_report.py            # 终端表格
@@ -21,13 +20,11 @@ import html
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
+import agy_quota
 import sub2api_quota
 
 HOME = Path.home()
@@ -39,10 +36,6 @@ PUBLIC_HIDDEN_ACCOUNTS_PATH = Path(os.environ.get(
 LAST_GOOD_JSON = Path(os.environ.get(
     "QUOTA_LAST_GOOD",
     str(HOME / ".cache/ai-quota-monitor/last-good.json"),
-))
-AGY_GROUPS_CACHE = Path(os.environ.get(
-    "QUOTA_AGY_GROUPS_CACHE",
-    str(HOME / ".cache/ai-quota-monitor/agy-groups.json"),
 ))
 
 
@@ -68,178 +61,6 @@ def _write_json_0600(path: Path, payload: dict, *, indent: int | None = 2) -> No
 # ---------- 数据源 ----------
 
 
-def _agy_bin() -> str:
-    return shutil.which("agy") or str(HOME / ".local/bin/agy")
-
-
-def _tmux_slash_probe(cmd: str, slash: str, wait_boot: int = 12, wait_panel: int = 5,
-                      pre_enter: bool = False) -> str | None:
-    """通用：tmux 驱动 TUI 执行 slash 命令并截屏。pre_enter 用于先按一次回车（如 agy 的信任确认）。"""
-    if not shutil.which("tmux"):
-        return None
-    sess = f"quota_probe_{Path(cmd).name.replace(' ', '_')}"
-    subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True)
-    env = os.environ.copy()
-    env["PATH"] = f"{HOME}/.local/bin:{env.get('PATH', '')}"
-    try:
-        subprocess.run(["tmux", "new-session", "-d", "-s", sess, "-x", "200", "-y", "50", cmd],
-                       env=env, check=True, timeout=15, capture_output=True)
-        time.sleep(wait_boot)
-        if pre_enter:
-            subprocess.run(["tmux", "send-keys", "-t", sess, "Enter"],
-                           check=True, timeout=5, capture_output=True)
-            time.sleep(4)
-        subprocess.run(["tmux", "send-keys", "-t", sess, slash, "Enter"],
-                       check=True, timeout=5, capture_output=True)
-        time.sleep(wait_panel)
-        out = subprocess.run(["tmux", "capture-pane", "-t", sess, "-p"],
-                             capture_output=True, timeout=5)
-        return out.stdout.decode("utf-8", errors="ignore")
-    except Exception:  # noqa: BLE001
-        return None
-    finally:
-        subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True)
-
-
-def _parse_refreshes_in(s: str) -> str:
-    """'Refreshes in 74h 29m' 或 '3 hours, 59 minutes' → 绝对时间 %m-%d %H:%M"""
-    m = re.search(
-        r"(?:(\d+)\s*(?:d|days?))?[,\s]*(?:(\d+)\s*(?:h|hours?))?[,\s]*(?:(\d+)\s*(?:m|minutes?))?",
-        s,
-    )
-    if not m or not any(m.groups()):
-        return "?"
-    d, h, mi = (int(g) if g else 0 for g in m.groups())
-    t = dt.datetime.now() + dt.timedelta(days=d, hours=h, minutes=mi)
-    return t.strftime("%m-%d %H:%M")
-
-
-def _agy_parse_group(text: str, marker: str) -> dict | None:
-    """解析 agy /usage 面板中的一个模型组。"""
-    if marker not in text:
-        return None
-    seg = text.split(marker, 1)[1][:2000]
-    for stop in ("GEMINI MODELS", "CLAUDE AND GPT MODELS", "GEMINI 4 ARGON", "Within each group"):
-        if stop != marker and stop in seg:
-            seg = seg.split(stop, 1)[0]
-    m_week = re.search(
-        r"(?:Weekly Limit Remaining|Gemini 4 Argon Weekly Limit)\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*"
-        r"(?:[\d.]+%\s+remaining\s*·\s*)?Refreshes in ([^\n]+)",
-        seg,
-    )
-    m_5h = re.search(
-        r"Five Hour Limit Remaining\s*\n[^%\n]*?([\d.]+)%[^\n]*\n\s*"
-        r"(?:[\d.]+%\s+remaining\s*·\s*)?Refreshes in ([^\n]+)",
-        seg,
-    )
-    m_5h_disabled = re.search(
-        r"Five Hour Limit Remaining\s*\n\s*Disabled:\s*You have hit your 5-hour limit[^\n]*?refresh in ([^\n.]+)",
-        seg,
-        re.IGNORECASE,
-    )
-    if not m_week:
-        return None
-    week_left = float(m_week.group(1))
-    used_week = round(100 - week_left, 1)
-    row = {
-        "used_pct": used_week,
-        "used_text": f"{used_week:g}%",
-        "reset": _parse_refreshes_in(m_week.group(2)),
-    }
-    if m_5h:
-        left5 = float(m_5h.group(1))
-        used_5h = round(100 - left5, 1)
-        row["fiveh_pct"] = used_5h
-        row["fiveh_text"] = f"{used_5h:g}%"
-        row["fiveh_reset"] = _parse_refreshes_in(m_5h.group(2))
-    elif m_5h_disabled:
-        row["fiveh_pct"] = 100.0
-        row["fiveh_text"] = "100%"
-        row["fiveh_reset"] = _parse_refreshes_in(m_5h_disabled.group(1))
-    return row
-
-
-def _load_agy_groups_cache() -> dict[str, dict]:
-    try:
-        payload = json.loads(AGY_GROUPS_CACHE.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or not isinstance(payload.get("groups"), dict):
-            return {}
-        return payload
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_agy_groups_cache(groups: dict[str, dict]) -> None:
-    try:
-        _write_json_0600(AGY_GROUPS_CACHE, {"captured_at": time.time(), "groups": groups})
-    except OSError:
-        pass
-
-
-def _enrich_antigravity_rows(rows: list[dict]) -> list[dict]:
-    """为 Sub2API 拆出的 Gemini 4 Hydrogen / Gemini · Claude 补齐周额度 + 5h 双窗口。"""
-    needs_enrichment = any(
-        r.get("status") == "ok"
-        and r.get("name") in {"Gemini 4 Hydrogen", "Gemini · Claude"}
-        and r.get("fiveh_pct") is None
-        and r.get("window_kind") == "5h"
-        for r in rows
-    )
-    if not needs_enrichment:
-        return rows
-
-    cache = _load_agy_groups_cache()
-    captured_at = cache.get("captured_at")
-    groups = cache.get("groups") if isinstance(cache.get("groups"), dict) else {}
-    cache_fresh = isinstance(captured_at, (int, float)) and 0 <= time.time() - float(captured_at) <= 1800
-
-    if not cache_fresh or "Gemini 4 Hydrogen" not in groups:
-        text = _tmux_slash_probe(_agy_bin(), "/usage", wait_boot=12, wait_panel=6, pre_enter=False)
-        if text:
-            parsed_groups: dict[str, dict] = {}
-            for marker, target_name in (
-                ("GEMINI MODELS", "Gemini 4 Hydrogen"),
-                ("CLAUDE AND GPT MODELS", "Gemini · Claude"),
-                ("GEMINI 4 ARGON", "Gemini · 4 Argon"),
-            ):
-                g = _agy_parse_group(text, marker)
-                if g:
-                    parsed_groups[target_name] = g
-            if parsed_groups:
-                groups = {**groups, **parsed_groups}
-                _save_agy_groups_cache(groups)
-
-    enriched = []
-    for r in rows:
-        name = r.get("name")
-        if (
-            r.get("status") == "ok"
-            and name in {"Gemini 4 Hydrogen", "Gemini · Claude"}
-            and r.get("fiveh_pct") is None
-            and r.get("window_kind") == "5h"
-            and isinstance(groups.get(name), dict)
-        ):
-            g = groups[name]
-            week_pct = g.get("used_pct")
-            week_reset = g.get("reset")
-            if week_pct is not None and week_reset:
-                updated = {
-                    **r,
-                    "fiveh_pct": r.get("used_pct"),
-                    "fiveh_text": r.get("used_text", "—"),
-                    "fiveh_reset": r.get("reset", "?"),
-                    "fiveh_label": "5h 窗",
-                    "used_pct": week_pct,
-                    "used_text": g.get("used_text", f"{week_pct:g}%"),
-                    "reset": week_reset,
-                    "window_kind": "dual",
-                }
-                enriched.append(updated)
-                continue
-        enriched.append(r)
-    return enriched
-
-
 def _unhealthy_rows(rows: list[dict]) -> list[dict]:
     """统计需要重试或阻断写入的来源。
 
@@ -254,10 +75,13 @@ def _unhealthy_rows(rows: list[dict]) -> list[dict]:
 
 
 def _save_last_good(rows: list[dict]) -> None:
-    """记住最近一次全部新鲜的快照，供整体读取失败时降级展示。"""
+    """更新成功来源，同时保留本轮仍在使用的缓存，不把旧数据重新标为新鲜。"""
     fresh = {r["name"]: r for r in rows if r.get("status") == "ok" and not r.get("stale")}
     if not fresh:
         return
+    reused = {r["name"] for r in rows if r.get("cache_fallback")}
+    if reused:
+        fresh.update({name: row for name, row in _load_last_good().items() if name in reused and name not in fresh})
     try:
         _write_json_0600(
             LAST_GOOD_JSON,
@@ -291,7 +115,8 @@ def _degrade_with_cache(rows: list[dict]) -> tuple[list[dict], list[str]]:
             continue
         name = row.get("name") or ""
         old = cached.get(name)
-        if not isinstance(old, dict) or (old.get("used_pct") is None and old.get("fiveh_pct") is None):
+        if (not isinstance(old, dict) or old.get("source") != row.get("source")
+                or (old.get("used_pct") is None and old.get("fiveh_pct") is None)):
             out.append(row)
             missing.append(name)
             continue
@@ -337,13 +162,8 @@ def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
     config = sub2api_quota.load_config()
     if config is None:
         raise sub2api_quota.ConfigError("尚未配置 Sub2API 额度数据源")
-    rows = _enrich_antigravity_rows(
-        sub2api_quota.collect(
-            config,
-            retry_attempts=retry_attempts,
-            retry_delay=retry_delay,
-        )
-    )
+    rows = sub2api_quota.collect(config, retry_attempts=retry_attempts, retry_delay=retry_delay)
+    rows += agy_quota.collect(retry_attempts=retry_attempts, retry_delay=retry_delay)
     return _visible_quota_rows(rows)
 
 
@@ -538,9 +358,6 @@ def render(rows: list[dict]) -> str:
         if r.get("note"):
             s += f"，{r['note']}"
         lines.append(s)
-        if r.get("sub_quotas"):
-            for sq in r["sub_quotas"]:
-                lines.append(f"  · {sq['label']}：已用 {sq['used_text']}，重置 {sq['reset']}")
     extra = _alerts_text(alerts)
     if extra:
         lines.append("")
@@ -564,6 +381,8 @@ def _provider_meta(raw_name: str) -> tuple[str, str, str]:
     low = (raw_name or "").lower()
     if "codex" in low:
         return ("codex", "OpenAI · Codex", "⚡")
+    if raw_name == agy_quota.CLAUDE_LABEL:
+        return ("claude", "Google Antigravity", "🎭")
     if "claude" in low:
         return ("claude", "Anthropic · Claude", "🎭")
     if "argon" in low:
@@ -593,12 +412,14 @@ def _card(r: dict, alert: dict | None = None) -> str:
         window_label = _html_text(r.get("fiveh_label", "5h 窗"))
         win_tag_label = f"⏱️ {window_label}周期配额"
         meta_line = f"{window_label}已用 {pct_txt} · 重置 {_html_text(r.get('fiveh_reset', '?'))}"
-        fiveh = (
-            '<div class="sub-box single-win">'
-            '<div class="sub-head"><span class="sub">♾️ 周期配额模式</span>'
-            '<span class="sub-tag">滚动短窗</span></div>'
-            '<div class="meta">按 5 小时滚动窗口独立计量，不设额外周总额度上限</div></div>'
-        )
+        fiveh = ""
+        if r.get("source") != agy_quota.SOURCE:
+            fiveh = (
+                '<div class="sub-box single-win">'
+                '<div class="sub-head"><span class="sub">♾️ 周期配额模式</span>'
+                '<span class="sub-tag">滚动短窗</span></div>'
+                '<div class="meta">按 5 小时滚动窗口独立计量，不设额外周总额度上限</div></div>'
+            )
     else:
         pct = r.get("used_pct")
         pct_txt = f"{pct:g}%" if pct is not None else "—"
@@ -623,26 +444,13 @@ def _card(r: dict, alert: dict | None = None) -> str:
             fiveh = f"""<div class="sub-box{f_exh}"><div class="sub-head"><span class="sub">⚡ {fiveh_title}</span><span class="sub-stats">{f_pct_badge}{f_rem_badge}</span></div>
 <div class="bar small"><div class="fill" style="width:{min(100, max(0, fp or 0))}%;background:{fc}"></div></div>
 <div class="meta">已用 {_html_text(r['fiveh_text'])} · 重置 {_html_text(r.get('fiveh_reset', '?'))}</div></div>"""
-        elif not r.get("sub_quotas"):
+        elif r.get("source") != agy_quota.SOURCE:
             fiveh = (
                 '<div class="sub-box single-win">'
                 '<div class="sub-head"><span class="sub">♾️ 独立周配额池</span>'
                 '<span class="sub-tag">仅周窗口</span></div>'
                 '<div class="meta">直接按 7 天周额度扣减，无 5 小时短时窗口限制</div></div>'
             )
-    sub_bars = ""
-    if r.get("sub_quotas"):
-        blocks = []
-        for sq in r["sub_quotas"]:
-            sp = sq.get("used_pct")
-            sc = _color(sp)
-            label = _html_text(sq["label"])
-            used_txt = _html_text(sq.get("used_text", "—"))
-            reset_txt = _html_text(sq.get("reset", "?"))
-            blocks.append(f"""<div class="sub-box"><div class="sub-head"><span class="sub">{label}</span><span class="sub-pct" style="color:{sc}">{used_txt}</span></div>
-<div class="bar small"><div class="fill" style="width:{min(100, max(0, sp or 0))}%;background:{sc}"></div></div>
-<div class="meta">已用 {used_txt} · 重置 {reset_txt}</div></div>""")
-        sub_bars = "".join(blocks)
     note = f"<div class='meta dim'>{_html_text(r['note'])}</div>" if r.get("note") else ""
     urgent = " urgent" if alert else ""
     weekly_rem = _remain_pct(r, "used_pct")
@@ -676,7 +484,7 @@ def _card(r: dict, alert: dict | None = None) -> str:
 <div class="remain">{rem_txt}</div></div>
 <div class="bar"><div class="fill" style="width:{min(100, max(0, pct or 0))}%;background:{c}"></div></div>
 <div class="meta main-meta">{meta_line}</div>
-{sub_bars}{fiveh}{note}</div>"""
+{fiveh}{note}</div>"""
 
 
 def _summary_strip_html(rows: list[dict], alerts: list[dict]) -> str:
@@ -713,7 +521,7 @@ def _summary_strip_html(rows: list[dict], alerts: list[dict]) -> str:
     avg_rem = f"{sum(rem_vals) / len(rem_vals):.0f}%" if rem_vals else "—"
     return (
         '<div class="summary-strip" aria-label="额度概览统计">'
-        f'<div class="kpi"><span class="kpi-label">监控源总数</span><span class="kpi-val">{total}</span><span class="kpi-sub">含 {dual_count} 个 5h+周双窗模型</span></div>'
+        f'<div class="kpi"><span class="kpi-label">监控源总数</span><span class="kpi-val">{total}</span><span class="kpi-sub">含 {dual_count} 个 5h+周双窗来源</span></div>'
         f'<div class="kpi ok"><span class="kpi-label">正常可用</span><span class="kpi-val">{healthy}</span><span class="kpi-sub">周窗与 5h 窗均充裕</span></div>'
         f'<div class="kpi warn"><span class="kpi-label">快刷新 / 关注</span><span class="kpi-val">{warn_count}</span><span class="kpi-sub">临近重置或余量偏低</span></div>'
         f'<div class="kpi bad"><span class="kpi-label">限流 / 已耗尽</span><span class="kpi-val">{exhausted}</span><span class="kpi-sub">周额度用尽或 5h 满载</span></div>'
@@ -1888,7 +1696,7 @@ table.ledger td.amt.zero{{color:#8b949e}}
 </style></head><body>
 {navigation}
 <header class="page-head"><div><h1>{heading}</h1>
-<div class="ts">更新于 {now} · {"公开快照 · 每小时自动更新" if public else "统一口径：本周已用 / 周重置 · 数据源全部本机只读"} · {detail}</div></div></header>
+<div class="ts">更新于 {now} · {"公开快照 · 每小时自动更新" if public else "统一口径：本周已用 / 周重置 · 只读采集"} · {detail}</div></div></header>
 <main id="quotaContent">{content}</main>
 {freshness}
 {filter_script}
@@ -1946,6 +1754,9 @@ def _refresh_state(log: bool = True) -> None:
                         for row in _STATE["rows"]
                     ]
             return
+        if _unhealthy_rows(rows):
+            rows, _ = _degrade_with_cache(rows)
+        _save_last_good(rows)
         with _STATE_LOCK:
             _STATE["rows"] = rows
             _STATE["last"] = dt.datetime.now().isoformat(timespec="seconds")
@@ -2029,7 +1840,7 @@ def main() -> int:
         "--max-unhealthy",
         type=int,
         default=-1,
-        help="超过此异常/缓存来源数则取消写入；负数表示不限制",
+        help="异常来源数超过此值且有来源无缓存时取消写入；负数表示不限制",
     )
     ap.add_argument("--serve", action="store_true", help="启动本地服务，网页上可直接刷新查询")
     ap.add_argument("--port", type=int, default=8788)
@@ -2047,22 +1858,14 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 2
     unhealthy = _unhealthy_rows(rows)
-    if args.max_unhealthy >= 0 and len(unhealthy) > args.max_unhealthy:
-        names = "、".join(str(row.get("name") or "未知来源") for row in unhealthy)
+    if unhealthy:
         rows, missing = _degrade_with_cache(rows)
-        if missing:
-            print(
-                f"额度采集重试后仍有 {len(missing)} 个来源无缓存可用，取消本次写入："
-                f"{'、'.join(missing)}",
-                file=sys.stderr,
-            )
+        if args.max_unhealthy >= 0 and len(unhealthy) > args.max_unhealthy and missing:
+            print(f"额度采集重试后仍有 {len(missing)} 个来源无缓存可用，取消本次写入", file=sys.stderr)
             return 2
-        print(
-            f"降级发布：{len(unhealthy)} 个来源本次刷新失败，沿用上次成功快照（{names}）",
-            file=sys.stderr,
-        )
-    else:
-        _save_last_good(rows)
+        if reused := len(unhealthy) - len(missing):
+            print(f"{reused} 个来源本次刷新失败，沿用上次成功快照", file=sys.stderr)
+    _save_last_good(rows)
     if args.log:
         append_log(rows)
     if args.html:

@@ -2,7 +2,7 @@
   <a href="./README.md">简体中文</a> · English
 </p>
 
-<!-- README_SYNC: source=working-tree; updated=2026-11-17 -->
+<!-- README_SYNC: source=working-tree; updated=2026-11-18 -->
 
 <div align="center">
 
@@ -18,7 +18,7 @@
 
 **If it saved you from opening three different clients, a Star helps more people stuck with the same quota anxiety find it.**
 
-<img src="./docs/assets/dashboard-overview.jpg" alt="Full-page quota overview: source counters, refresh notice, all nine account cards and the last two days of spend" width="100%" />
+<img src="./docs/assets/dashboard-overview.jpg" alt="Earlier quota dashboard: source counters, refresh notice, quota cards and two days of spend" width="100%" />
 
 </div>
 
@@ -28,7 +28,7 @@ AI coding quotas live in separate clients and web pages: some only show a 5-hour
 
 AI Quota Monitor collects those numbers into one table and three web pages: a single command that reads the **weekly quota, 5-hour rolling window and reset time** of several accounts, and renders a terminal table, a local card-style dashboard and three public static pages.
 
-Nothing is scraped from your laptop: quota data is read through an existing SSH connection, read-only, inside the Sub2API server, and Antigravity's weekly window is completed with `agy /usage`. Every query is read-only — no model requests, no quota resets.
+Codex, Kimi and MiniMax are queried on the Sub2API server over SSH. Antigravity uses the locally signed-in `agy` CLI and shows shared model pools, not invented per-model limits. These quota queries do not run model tasks or reset quota.
 
 **📊 Live snapshot (updated hourly, 9:30–23:30 daily)**: https://insistgang.top/ai-quota-monitor/
 
@@ -59,7 +59,7 @@ Three tabs answer three different questions: which account needs attention now, 
 
 ### Quota overview
 
-![Full-page quota overview: source counters, refresh notice, all nine account cards and the last two days of spend](docs/assets/dashboard-overview.jpg)
+![Earlier quota dashboard: source counters, refresh notice, quota cards and two days of spend](docs/assets/dashboard-overview.jpg)
 
 Cards are ordered by remaining weekly quota, so the account that needs action comes first. The main percentage is the weekly usage the vendor actually reported; the 5-hour window is shown separately and never mixed into the weekly number. An unknown weekly window shows `—` instead of a fake 0%.
 
@@ -88,6 +88,8 @@ open quota-dashboard.html           # open it in a browser
 
 To collect real data you also need the private Sub2API mapping at `~/.cache/ai-quota-monitor/sub2api.json` (mode `0600`). When it is missing, the program fails loudly with exit code 2 instead of publishing an empty snapshot. The configuration structure and the server permissions are described in [Sub2API quota access](docs/sub2api-quota.md) (Chinese).
 
+Antigravity is optional. Install and sign in to `agy` as the system user running the monitor; no Sub2API account is needed for this source. `agy --print "/usage" --output-format json` should return structured quota data; verified with CLI 1.5.10. The monitor looks for the CLI on `PATH` or at `~/.local/bin/agy` and collects only Sub2API quotas if it is not found.
+
 Common commands:
 
 ```bash
@@ -107,7 +109,7 @@ The remaining flags:
 | `--port <port>` | Used with `--serve`, default `8788` |
 | `--retry-failures <n>` | Extra retries for unhealthy sources |
 | `--retry-delay <seconds>` | Delay between retries, default `15` |
-| `--max-unhealthy <n>` | Cancel this write when more than n sources failed or fell back to cache; a negative value disables the limit |
+| `--max-unhealthy <n>` | Cancel this write when more than n sources failed and at least one has no usable cache; a negative value disables the limit |
 
 ## Configuration
 
@@ -118,8 +120,7 @@ The program ships without any credentials. Every private configuration lives und
 | `sub2api.json` | SSH alias, account IDs, platforms and display names | The command fails and exits without writing anything |
 | `public-hidden-accounts.json` | Accounts that must not be published | Public page generation stops |
 | `finance.json` | Path to the finance note and the public masking map | Public page generation stops |
-| `last-good.json` | The most recent successful snapshot | With no cache to fall back on, publishing is blocked |
-| `agy-groups.json` | Cached Antigravity model groups | The groups are queried again |
+| `last-good.json` | The last valid snapshot for each source | Failed reads have no fallback and are still subject to the failure limit |
 
 Paths and behaviour can be overridden with environment variables:
 
@@ -130,7 +131,6 @@ Paths and behaviour can be overridden with environment variables:
 | `QUOTA_FINANCE_CONFIG` | Path to the finance config | `~/.cache/ai-quota-monitor/finance.json` |
 | `QUOTA_FINANCE_MD` | Path to the finance note (Markdown) | The `finance_md` field inside `finance.json` |
 | `QUOTA_LAST_GOOD` | Path to the last successful snapshot cache | `~/.cache/ai-quota-monitor/last-good.json` |
-| `QUOTA_AGY_GROUPS_CACHE` | Path to the Antigravity group cache | `~/.cache/ai-quota-monitor/agy-groups.json` |
 | `QUOTA_MONITOR_HOME` | Repository root (used by the launchd entry) | `~/Desktop/个人工具/ai-quota-monitor` |
 | `QUOTA_RUNTIME_BIN_DIR` | Where the launchd entry is installed | `~/.local/bin` |
 | `QUOTA_PYTHON_BIN` | Python interpreter to use | `python3` |
@@ -144,10 +144,10 @@ If the finance note itself is missing or unreadable, the public pages still rend
 | Kimi for Coding (two accounts) | Sub2API CN quota endpoints, reading the 5h and weekly windows |
 | Codex (OpenAI accounts) | Official usage endpoint using the current Sub2API credentials inside the server; 5h and 7-day windows are separated by their real duration |
 | MiniMax | Sub2API CN quota endpoints; only the windows the upstream actually returned for this call |
-| Antigravity (Gemini group) | Per-model Sub2API quota, completed with `agy /usage` for the Gemini / Claude weekly windows |
+| Antigravity (Gemini, Claude / GPT-OSS) | Shared pools from the local CLI, using the weekly and 5-hour windows and reset times it actually reports |
 | Non-AI services (such as `ikuuu`) | Expiry dates read from the private finance notes, surfaced on the subscriptions page and in urgent reminders |
 
-The current live snapshot covers 9 accounts: Kimi ×2, Codex ×3, MiniMax ×1, Antigravity ×3. The Doubao DOM collector and the old local CLI collectors have been removed; their history stays in the local ledger and is filtered out at display time.
+The current snapshot covers six Sub2API accounts (Kimi ×2, Codex ×3, MiniMax ×1) and two Antigravity pools. Older Antigravity history stays separate from the new pools. Retired sources such as Doubao are still filtered out at display time.
 
 ## Scheduling on macOS (launchd)
 
@@ -169,7 +169,7 @@ A few things to know:
 
 ## Privacy and security
 
-- Only read-only quota endpoints are queried inside the Sub2API server; plans, reset policies and model traffic are never touched
+- Sub2API queries run inside the server; Antigravity uses the signed-in CLI's quota command without reading or copying its local OAuth credentials
 - Keys, tokens and admin password digests are never printed or cached; short-lived server-side credentials exist only in the collector process memory, and SSH brings back nothing but the allowed quota fields
 - The local dashboard, the live server and the public pages mask emails by default (for example `f***@163.com`); public pages additionally apply `public_replacements` from `finance.json` to strip real names, bank names and private account nicknames, while the local ledger keeps the original identifiers for continuous statistics
 - `quota-log.csv` and `quota-dashboard.html` contain your usage data and are excluded by `.gitignore`, so they cannot leak into the repository
@@ -190,7 +190,7 @@ A few things to know:
 | Bash | `publish.sh`, `scripts/*.sh` | Manual publishing and the launchd entry |
 | SSH | From your machine to the Sub2API server | Non-interactive login that runs the restricted query script there |
 | Sub2API | The quota source | The server needs Python 3, Docker and permission to read `sub2api-db` |
-| `tmux` + `agy` | Antigravity weekly window | `agy /usage` is a probe that consumes nothing |
+| `agy` (optional) | Local Antigravity quota | Native JSON status command; no terminal automation |
 | macOS launchd | Scheduled publishing | Hourly from 9:30 to 23:30 |
 | GitHub Pages | The three public pages | Built from the `docs/` directory of the `main` branch |
 
@@ -198,7 +198,8 @@ A few things to know:
 
 ```text
 ai-quota-monitor/
-├── quota_report.py              # Sub2API normalization, Antigravity weekly window, daily math, HTML rendering
+├── quota_report.py              # quota aggregation, daily math, HTML rendering
+├── agy_quota.py                 # local Antigravity shared quotas
 ├── sub2api_quota.py             # private mapping, SSH reads, window validation, per-account retry
 ├── publish_runtime.py           # the single render, commit and push flow
 ├── publish.sh                   # manual publishing entry point
@@ -215,7 +216,7 @@ ai-quota-monitor/
 │   └── assets/                  # real screenshots used by this README
 ├── examples/
 │   └── com.leo.quota-report.plist  # launchd schedule template
-├── tests/                       # 118 regression tests (4 files)
+├── tests/                       # 126 regression tests
 ├── README.md / README_EN.md     # Chinese and English documentation
 ├── ROADMAP.md                   # progress and verification log
 └── LICENSE
@@ -227,13 +228,13 @@ Two runtime artifacts are not tracked: `quota-log.csv` (the daily ledger) and `q
 
 ```bash
 python3 -B -m unittest discover -s tests -q
-python3 -m py_compile quota_report.py sub2api_quota.py publish_runtime.py scripts/sub2api_quota_snapshot.py
+python3 -m py_compile quota_report.py agy_quota.py sub2api_quota.py publish_runtime.py scripts/sub2api_quota_snapshot.py
 bash -n publish.sh scripts/*.sh
 ```
 
-The 118 tests are spread over four files: `test_quota_report.py` (61 — quota math, masking, HTML escaping), `test_sub2api_quota.py` (30 — window normalization and retries), `test_sub2api_remote.py` (17 — remote reads) and `test_publish_runtime.py` (10 — publishing flow). The full acceptance checklist lives in [project design notes](docs/project-design.md) (Chinese).
+The 126 tests cover quota calculations, CLI decoding, Sub2API reads and retries, masking and publishing. The acceptance checklist lives in [project design notes](docs/project-design.md) (Chinese).
 
-> Every command, flag and path in this README was checked against the current code. Last reviewed: 2026-11-15.
+> Data source documentation last reviewed: 2026-11-18.
 
 ## License
 

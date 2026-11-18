@@ -19,7 +19,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-ALLOWED_PLATFORMS = {"openai", "kimi", "minimax", "antigravity"}
+ALLOWED_PLATFORMS = {"openai", "kimi", "minimax"}
 MAX_ACCOUNTS = 16
 MAX_BIGINT = (1 << 63) - 1
 MAX_INPUT_BYTES = 8192
@@ -29,10 +29,6 @@ SQL_TIMEOUT_SECONDS = 10
 HTTP_TIMEOUT_SECONDS = 30
 SUB2API_BASE_URL = "http://127.0.0.1:8080"
 OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
-ANTIGRAVITY_QUOTA_SUMMARY_URL = (
-    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
-)
-ANTIGRAVITY_USER_AGENT = "antigravity/1.5.3 (os_type=darwin; arch=arm64; auth_method=oauth)"
 
 _JWT_SECRET_SQL = (
     "SELECT json_build_object('value', value) "
@@ -140,8 +136,6 @@ def route_for(account_id, platform):
         return OPENAI_USAGE_URL
     if platform in ("kimi", "minimax"):
         return f"{SUB2API_BASE_URL}/api/v1/admin/cn-providers/accounts/{account_id}/quota"
-    if platform == "antigravity":
-        return f"{SUB2API_BASE_URL}/api/v1/admin/accounts/{account_id}/usage?force=true"
     raise ValueError("invalid_input")
 
 
@@ -150,14 +144,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _request_json(method, url, headers, *, body_dict=None):
-    """Make one GET or POST request with verified TLS, no proxy, no redirect, and bounded body."""
-    raw_body = None
-    request_headers = headers
-    if body_dict is not None:
-        raw_body = json.dumps(body_dict, separators=(",", ":")).encode("utf-8")
-        request_headers = {**headers, "Content-Type": "application/json"}
-    request = urllib.request.Request(url, data=raw_body, headers=request_headers, method=method)
+def read_json(url, headers):
+    """Make one GET with verified TLS, no proxy, no redirect, and bounded body."""
+    request = urllib.request.Request(url, headers=headers, method="GET")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
         with opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
@@ -178,16 +167,6 @@ def _request_json(method, url, headers, *, body_dict=None):
         raise
     except (urllib.error.URLError, TimeoutError, OSError):
         raise RequestFailure("request_failed") from None
-
-
-def read_json(url, headers):
-    """Make one GET with verified TLS, no proxy, no redirect, and bounded body."""
-    return _request_json("GET", url, headers)
-
-
-def _post_json(url, headers, body_dict):
-    """Make one bounded POST with verified TLS, no proxy, and no redirect."""
-    return _request_json("POST", url, headers, body_dict=body_dict)
 
 
 def sql(query):
@@ -249,75 +228,6 @@ def _filter_rate_limit(value):
     return result
 
 
-def _filter_progress(value):
-    if not isinstance(value, dict):
-        return None
-    result = {}
-    if _safe_number(value.get("utilization")):
-        result["utilization"] = value["utilization"]
-    reset = value.get("resets_at")
-    if isinstance(reset, str):
-        result["resets_at"] = reset
-    remaining = value.get("remaining_seconds")
-    if type(remaining) is int:
-        result["remaining_seconds"] = remaining
-    return result
-
-
-def _filter_antigravity_quota(value):
-    if not isinstance(value, dict):
-        return None
-    result = {}
-    for model, quota in value.items():
-        if not isinstance(model, str) or not isinstance(quota, dict):
-            continue
-        entry = {}
-        if _safe_number(quota.get("utilization")):
-            entry["utilization"] = quota["utilization"]
-        reset = quota.get("reset_time")
-        if isinstance(reset, str):
-            entry["reset_time"] = reset
-        if entry:
-            result[model] = entry
-    return result
-
-
-def _filter_antigravity_quota_summary(value):
-    if not isinstance(value, dict):
-        return None
-    raw_groups = value.get("groups")
-    if not isinstance(raw_groups, list):
-        return None
-    groups = []
-    for group in raw_groups:
-        if not isinstance(group, dict):
-            continue
-        raw_buckets = group.get("buckets")
-        if not isinstance(raw_buckets, list):
-            continue
-        buckets = []
-        for bucket in raw_buckets:
-            if not isinstance(bucket, dict):
-                continue
-            item = {}
-            for str_key in ("bucketId", "displayName", "window", "resetTime"):
-                if isinstance(bucket.get(str_key), str):
-                    item[str_key] = bucket[str_key]
-            if _safe_number(bucket.get("remainingFraction")):
-                item["remainingFraction"] = bucket["remainingFraction"]
-            if isinstance(bucket.get("disabled"), bool):
-                item["disabled"] = bucket["disabled"]
-            if item:
-                buckets.append(item)
-        if not buckets:
-            continue
-        entry = {"buckets": buckets}
-        if isinstance(group.get("displayName"), str):
-            entry["displayName"] = group["displayName"]
-        groups.append(entry)
-    return {"groups": groups} if groups else None
-
-
 def filter_payload(platform, payload, captured_at):
     """Project provider payloads onto the collector's non-secret quota contract."""
     if not isinstance(payload, dict):
@@ -361,22 +271,7 @@ def filter_payload(platform, payload, captured_at):
                 result[key] = payload[key]
         return result
 
-    result = {}
-    for key in ("five_hour", "seven_day", "thirty_day"):
-        progress = _filter_progress(payload.get(key))
-        if progress is not None:
-            result[key] = progress
-    if isinstance(payload.get("updated_at"), str):
-        result["updated_at"] = payload["updated_at"]
-    if isinstance(payload.get("error_code"), str):
-        result["error_code"] = payload["error_code"]
-    antigravity_quota = _filter_antigravity_quota(payload.get("antigravity_quota"))
-    if antigravity_quota is not None:
-        result["antigravity_quota"] = antigravity_quota
-    antigravity_summary = _filter_antigravity_quota_summary(payload.get("antigravity_quota_summary"))
-    if antigravity_summary is not None:
-        result["antigravity_quota_summary"] = antigravity_summary
-    return result
+    return {}
 
 
 def _lookup_accounts(accounts, sql_runner):
@@ -423,24 +318,6 @@ def _load_openai_credentials(account_id, sql_runner):
     return token, chatgpt_account_id
 
 
-def _load_antigravity_credentials(account_id, sql_runner):
-    query = (
-        "SELECT json_build_object('access_token', credentials->>'access_token', "
-        "'project_id', credentials->>'project_id') "
-        f"FROM accounts WHERE id={account_id} AND platform='antigravity' "
-        "AND deleted_at IS NULL LIMIT 1;"
-    )
-    rows = sql_runner(query)
-    if not rows or not isinstance(rows[0], dict):
-        raise ValueError("missing_credential")
-    credentials = rows[0]
-    token = credentials.get("access_token")
-    project_id = credentials.get("project_id")
-    if not isinstance(token, str) or not token.strip():
-        raise ValueError("missing_credential")
-    return token.strip(), (project_id.strip() if isinstance(project_id, str) else "")
-
-
 def _request_headers(account, admin_token, sql_runner):
     if account["platform"] == "openai":
         access_token, chatgpt_account_id = _load_openai_credentials(account["id"], sql_runner)
@@ -467,27 +344,6 @@ def _fetch_account(account, admin_token, sql_runner, http_reader, captured_at):
             body = body.get("data") or {}
         if not isinstance(body, dict):
             return _error_result(account, "invalid_json", status)
-        if (
-            account["platform"] == "antigravity"
-            and "antigravity_quota_summary" not in body
-            and http_reader is read_json
-        ):
-            try:
-                ag_token, project_id = _load_antigravity_credentials(account["id"], sql_runner)
-                ag_headers = {
-                    "Authorization": "Bearer " + ag_token,
-                    "User-Agent": ANTIGRAVITY_USER_AGENT,
-                    "Accept": "application/json",
-                }
-                ag_status, ag_summary = _post_json(
-                    ANTIGRAVITY_QUOTA_SUMMARY_URL,
-                    ag_headers,
-                    {"project": project_id} if project_id else {},
-                )
-                if ag_status == 200 and isinstance(ag_summary, dict):
-                    body = {**body, "antigravity_quota_summary": ag_summary}
-            except Exception:
-                pass
         data = filter_payload(account["platform"], body, captured_at)
         if account["platform"] == "openai" and "error" in body:
             return _error_result(account, "api_error", status)

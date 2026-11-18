@@ -120,80 +120,6 @@ class NormalizationTests(unittest.TestCase):
         bad = snapshot(openai_data(), account_id=7)
         self.assertNotEqual(quota.normalize_account(account(), bad, now=NOW)["status"], "ok")
 
-    def test_antigravity_models_provide_weekly_quota(self):
-        data = {"updated_at": iso(NOW), "antigravity_quota": {
-            "gemini-3.8-flash-high": {"utilization": 8, "reset_time": iso(NOW + 7200)},
-            "claude-opus": {"utilization": 99, "reset_time": iso(NOW + 3600)},
-            "gemini-3.1-flash-image": {"utilization": 100, "reset_time": iso(NOW + 3600)},
-        }}
-        row = quota.normalize_account(account("antigravity", 9), snapshot(data, "antigravity", 9), now=NOW)
-        self.assertEqual(row["used_pct"], 8)
-        self.assertEqual(row["used_text"], "8%")
-        self.assertNotIn("fiveh_pct", row)
-
-    def test_antigravity_three_quotas_extracted(self):
-        data = {"updated_at": iso(NOW), "antigravity_quota": {
-            "gemini-4-argon-high": {"utilization": 12, "reset_time": iso(NOW + 3600)},
-            "gemini-4-hydrogen-high": {"utilization": 24, "reset_time": iso(NOW + 7200)},
-            "claude-sonnet-5-5-high": {"utilization": 5, "reset_time": iso(NOW + 10800)},
-        }}
-        row = quota.normalize_account(account("antigravity", 9), snapshot(data, "antigravity", 9), now=NOW)
-        self.assertEqual(row["status"], "ok")
-        self.assertIn("sub_quotas", row)
-        labels = {sq["label"]: sq["used_pct"] for sq in row["sub_quotas"]}
-        self.assertEqual(labels["Gemini 4 Argon"], 12)
-        self.assertEqual(labels["Gemini 4 Hydrogen"], 24)
-        self.assertEqual(labels["Claude"], 5)
-        self.assertIn("Argon 12%", row["note"])
-        self.assertIn("4 Hydrogen 24%", row["note"])
-        self.assertIn("Claude 5%", row["note"])
-        split = quota.split_antigravity_rows(row)
-        self.assertEqual([r["name"] for r in split], [
-            "Gemini · 4 Argon",
-            "Gemini 4 Hydrogen",
-            "Gemini · Claude",
-        ])
-
-    def test_antigravity_summary_extracts_dual_weekly_and_fiveh_windows(self):
-        data = {
-            "updated_at": iso(NOW),
-            "antigravity_quota": {
-                "gemini-4-argon-high": {"utilization": 3, "reset_time": iso(NOW + 5 * 86400)},
-                "gemini-4-hydrogen-xhigh": {"utilization": 23, "reset_time": iso(NOW + 7200)},
-                "claude-sonnet-5-5-high": {"utilization": 100, "reset_time": iso(NOW + 10800)},
-            },
-            "antigravity_quota_summary": {
-                "groups": [
-                    {
-                        "displayName": "Gemini Models",
-                        "buckets": [
-                            {"bucketId": "gemini-weekly", "window": "weekly",
-                             "remainingFraction": 0.861, "resetTime": iso(NOW + 4 * 86400)},
-                            {"bucketId": "gemini-5h", "window": "5h",
-                             "remainingFraction": 0.77, "resetTime": iso(NOW + 7200)},
-                        ],
-                    },
-                    {
-                        "displayName": "Claude and GPT models",
-                        "buckets": [
-                            {"bucketId": "3p-weekly", "window": "weekly",
-                             "remainingFraction": 0.128, "resetTime": iso(NOW + 86400)},
-                            {"bucketId": "3p-5h", "window": "5h",
-                             "remainingFraction": 0.0, "resetTime": iso(NOW + 10800)},
-                        ],
-                    },
-                ],
-            },
-        }
-        row = quota.normalize_account(account("antigravity", 9), snapshot(data, "antigravity", 9), now=NOW)
-        split = {r["name"]: r for r in quota.split_antigravity_rows(row)}
-        self.assertEqual(split["Gemini · 4 Argon"]["used_pct"], 3)
-        self.assertNotIn("fiveh_pct", split["Gemini · 4 Argon"])
-        self.assertEqual(split["Gemini 4 Hydrogen"]["used_pct"], 13.9)
-        self.assertEqual(split["Gemini 4 Hydrogen"]["fiveh_pct"], 23.0)
-        self.assertEqual(split["Gemini · Claude"]["used_pct"], 87.2)
-        self.assertEqual(split["Gemini · Claude"]["fiveh_pct"], 100.0)
-
 
 class ConfigurationAndCollectionTests(unittest.TestCase):
     def config(self):
@@ -211,6 +137,27 @@ class ConfigurationAndCollectionTests(unittest.TestCase):
             for field, value in (("ssh_host", "-oProxyCommand=bad"), ("accounts", [account(), account()])):
                 bad = self.config(); bad[field] = value; path.write_text(json.dumps(bad))
                 with self.assertRaises(quota.ConfigError):quota.load_config(path)
+
+    def test_legacy_antigravity_mappings_never_reach_ssh(self):
+        config = self.config()
+        config["accounts"].append({"id": 9, "platform": "antigravity", "collector": "antigravity",
+                                   "name": "Antigravity · Gemini 组"})
+        config["unmapped_accounts"].append({"collector": "antigravity", "name": "Legacy Antigravity"})
+        content = json.dumps(config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(content, encoding="utf-8")
+            loaded = quota.load_config(path)
+            self.assertEqual(path.read_text(encoding="utf-8"), content)
+        with mock.patch.object(quota, "fetch_snapshot", return_value={"accounts": [snapshot(openai_data())]}) as fetch:
+            rows = quota.collect(loaded, now=NOW)
+        fetch.assert_called_once_with(loaded, [account()])
+        self.assertEqual([row["source"] for row in rows], ["sub2api"])
+
+    def test_no_remote_accounts_performs_no_ssh(self):
+        with mock.patch.object(quota, "fetch_snapshot") as fetch:
+            self.assertEqual(quota.collect({"accounts": []}, retry_attempts=2), [])
+        fetch.assert_not_called()
 
     def test_retry_only_failed_accounts_and_preserve_missing_local_account(self):
         cfg = self.config(); second = account(account_id=7); second["name"] = "Codex · second@example.invalid"
@@ -239,16 +186,17 @@ class ConfigurationAndCollectionTests(unittest.TestCase):
 
 
 class MonitorIntegrationTests(unittest.TestCase):
-    def test_collect_delegates_to_sub2api_and_filters_hidden_rows(self):
-        specs = [(3, "kimi", "kimi_mine"), (4, "kimi", "kimi_shared"),
-                 (5, "minimax", "minimax"), (6, "openai", "codex_auth"),
-                 (9, "antigravity", "antigravity")]
-        config = {"accounts": [{"id": i, "platform": p, "collector": c, "name": c} for i, p, c in specs]}
-        expected = [{"name": "MiniMax", "status": "ok", "source": "sub2api"}]
+    def test_collect_reads_remote_accounts_and_local_cli_independently(self):
+        config = {"accounts": [account()]}
+        remote_rows = [{"name": "MiniMax", "status": "ok", "source": "sub2api"}]
+        local_rows = [{"name": quota_report.agy_quota.GEMINI_LABEL, "status": "ok", "source": "antigravity_cli"}]
+        expected = remote_rows + local_rows
         with mock.patch.object(quota_report.sub2api_quota, "load_config", return_value=config), \
-             mock.patch.object(quota_report.sub2api_quota, "collect", return_value=expected) as remote_collect:
+             mock.patch.object(quota_report.sub2api_quota, "collect", return_value=remote_rows) as remote_collect, \
+             mock.patch.object(quota_report.agy_quota, "collect", return_value=local_rows) as local_collect:
             self.assertEqual(quota_report.collect(retry_attempts=1, retry_delay=2), expected)
         remote_collect.assert_called_once_with(config, retry_attempts=1, retry_delay=2)
+        local_collect.assert_called_once_with(retry_attempts=1, retry_delay=2)
 
     def test_invalid_configuration_stops_before_writing_history_or_pages(self):
         with mock.patch.object(quota_report.sys, "argv", ["quota_report.py", "--log", "--html"]), \

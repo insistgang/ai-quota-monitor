@@ -37,43 +37,18 @@ class AntigravityQuotaTests(unittest.TestCase):
 
         self.assertEqual(names, ["Antigravity · Gemini 组"])
 
-    def test_enrich_antigravity_rows_promotes_flash_and_claude_to_dual_windows(self):
-        panel = """
-GEMINI MODELS
-  Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash
+    def test_missing_cli_window_is_not_advertised_as_unlimited(self):
+        row = {"name": quota_report.agy_quota.GEMINI_LABEL, "status": "ok",
+               "source": quota_report.agy_quota.SOURCE, "used_pct": 22, "used_text": "22%",
+               "note": "5h 窗口暂无有效数据"}
+        card = quota_report._card(row)
+        self.assertIn("5h 窗口暂无有效数据", card)
+        self.assertNotIn("无 5 小时短时窗口限制", card)
 
-  Weekly Limit Remaining
-    86.11%
-    Refreshes in 110h 47m
-
-  Five Hour Limit Remaining
-    77.00%
-    Refreshes in 3h 4m
-"""
-        sub_rows = [
-            {
-                "name": "Gemini 4 Hydrogen",
-                "status": "ok",
-                "used_pct": 23.0,
-                "used_text": "23%",
-                "reset": "11-10 00:42",
-                "window_kind": "5h",
-            },
-        ]
-        with tempfile.TemporaryDirectory() as tmp:
-            cache_path = Path(tmp) / "agy-groups.json"
-            with (
-                mock.patch.object(quota_report, "AGY_GROUPS_CACHE", cache_path),
-                mock.patch.object(quota_report, "_tmux_slash_probe", return_value=panel),
-            ):
-                enriched = quota_report._enrich_antigravity_rows(sub_rows)
-
-        self.assertEqual(enriched[0]["used_pct"], 13.9)
-        self.assertEqual(enriched[0]["used_text"], "13.9%")
-        self.assertEqual(enriched[0]["fiveh_pct"], 23.0)
-        self.assertEqual(enriched[0]["fiveh_text"], "23%")
-        self.assertEqual(enriched[0]["fiveh_reset"], "11-10 00:42")
-        self.assertEqual(enriched[0]["window_kind"], "dual")
+        row.update(used_pct=None, fiveh_pct=80, fiveh_text="80%", note="周窗口暂无有效数据")
+        card = quota_report._card(row)
+        self.assertIn("周窗口暂无有效数据", card)
+        self.assertNotIn("不设额外周总额度上限", card)
 
 
 class CollectionRetryTests(unittest.TestCase):
@@ -177,6 +152,15 @@ class DailyDeltaTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["delta"], 5.0)
         self.assertTrue(rows[0]["partial"])
+
+    def test_antigravity_shared_pool_starts_its_own_history(self):
+        pool = quota_report.agy_quota.GEMINI_LABEL
+        rows = self._daily_rows([
+            ("2026-08-19T23:30:00", "Gemini 4 Hydrogen", "ok", 20, "20%", "08-23 10:00", ""),
+            ("2026-08-20T09:30:00", pool, "ok", 70, "70%", "08-23 10:00", ""),
+            ("2026-08-20T10:30:00", pool, "ok", 72, "72%", "08-23 10:00", ""),
+        ])
+        self.assertEqual(rows, [{"name": pool, "delta": 2.0, "reset": False, "partial": True}])
 
     def test_grok_sources_are_hidden_from_daily_history(self):
         rows = self._daily_rows([
@@ -958,14 +942,15 @@ class CollectSourceTests(unittest.TestCase):
             with self.assertRaises(quota_report.sub2api_quota.ConfigError):
                 quota_report.collect()
 
-    def test_collect_runs_sub2api_enrichment_and_hides_retired_rows(self):
+    def test_collect_hides_retired_rows_without_cli(self):
         cfg = {"accounts": [{"id": 5, "platform": "minimax", "collector": "minimax", "name": "MiniMax"}]}
         rows = [
             {"name": "MiniMax", "status": "ok"},
             {"name": "豆包 · 个人会员", "status": "ok"},
         ]
         with mock.patch.object(quota_report.sub2api_quota, "load_config", return_value=cfg), \
-             mock.patch.object(quota_report.sub2api_quota, "collect", return_value=rows):
+             mock.patch.object(quota_report.sub2api_quota, "collect", return_value=rows), \
+             mock.patch.object(quota_report.agy_quota, "collect", return_value=[]):
             names = [r["name"] for r in quota_report.collect()]
 
         self.assertEqual(names, ["MiniMax"])
@@ -1014,16 +999,23 @@ class AuditBugFixTests(unittest.TestCase):
         # 平均周剩余仅统计真实有周额度的账号（Codex 剩 80%），不被 MiniMax 5h 剩余稀释
         self.assertIn('<span class="kpi-label">平均周剩余</span><span class="kpi-val">80%</span>', strip)
 
-    def test_cache_helpers_write_atomically_with_0600_mode(self):
+    def test_last_good_cache_uses_0600_and_preserves_a_failed_cli_source(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            agy_path = root / "agy-groups.json"
-            last_path = root / "last-good.json"
-            with mock.patch.object(quota_report, "AGY_GROUPS_CACHE", agy_path), \
-                 mock.patch.object(quota_report, "LAST_GOOD_JSON", last_path):
-                quota_report._save_agy_groups_cache({"Gemini 4 Hydrogen": {"used_pct": 1.0}})
-                quota_report._save_last_good([{"name": "MiniMax", "status": "ok", "used_pct": None}])
-            self.assertEqual(agy_path.stat().st_mode & 0o777, 0o600)
+            last_path = Path(tmp) / "last-good.json"
+            pool = {"name": quota_report.agy_quota.GEMINI_LABEL, "source": quota_report.agy_quota.SOURCE,
+                    "status": "ok", "captured_at": 1800000000, "used_pct": 22}
+            fresh = {"name": "MiniMax", "status": "ok", "fiveh_pct": 12}
+            failure = {"name": pool["name"], "source": pool["source"], "status": "no quota"}
+            with mock.patch.object(quota_report, "LAST_GOOD_JSON", last_path), \
+                 mock.patch.object(quota_report.sys, "argv", ["quota_report.py", "--log", "--max-unhealthy", "1"]), \
+                 mock.patch.object(quota_report, "collect", return_value=[fresh, failure]), \
+                 mock.patch.object(quota_report, "append_log") as append, \
+                 mock.patch.object(quota_report, "render", return_value=""):
+                quota_report._save_last_good([pool])
+                self.assertEqual(quota_report.main(), 0)
+                self.assertEqual(quota_report._load_last_good(), {fresh["name"]: fresh, pool["name"]: pool})
+                self.assertTrue(append.call_args.args[0][1]["cache_fallback"])
+                self.assertTrue(append.call_args.args[0][1]["stale"])
             self.assertEqual(last_path.stat().st_mode & 0o777, 0o600)
 
     def test_refresh_state_always_clears_updating_flag_on_unexpected_exception(self):

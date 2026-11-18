@@ -43,6 +43,7 @@ class RequestValidationTests(unittest.TestCase):
         invalid_accounts = [
             [{"id": 1, "platform": "kimi"}, {"id": 1, "platform": "minimax"}],
             [{"id": 1, "platform": "deepseek"}],
+            [{"id": 1, "platform": "antigravity"}],
             [{"id": 1, "platform": []}],
             [{"id": 1, "platform": {"name": "kimi"}}],
             [{"id": True, "platform": "kimi"}],
@@ -89,14 +90,14 @@ class RouteAndPayloadTests(unittest.TestCase):
             "http://127.0.0.1:8080/api/v1/admin/cn-providers/accounts/5/quota",
         )
         self.assertEqual(
-            remote.route_for(9, "antigravity"),
-            "http://127.0.0.1:8080/api/v1/admin/accounts/9/usage?force=true",
+            remote.route_for(9, "minimax"),
+            "http://127.0.0.1:8080/api/v1/admin/cn-providers/accounts/9/quota",
         )
         self.assertEqual(
             remote.route_for(6, "openai"),
             "https://chatgpt.com/backend-api/wham/usage",
         )
-        for account_id, platform in ((5, "kimi"), (9, "antigravity"), (6, "openai")):
+        for account_id, platform in ((5, "kimi"), (9, "minimax"), (6, "openai")):
             self.assertNotIn("reset", remote.route_for(account_id, platform).lower())
             self.assertNotIn("responses", remote.route_for(account_id, platform).lower())
 
@@ -336,32 +337,6 @@ class CollectionSafetyTests(unittest.TestCase):
 
         self.assertEqual(result["accounts"][0]["error"], "database_error")
         self.assertNotIn("private detail", json.dumps(result))
-
-    def test_post_json_shares_secret_redacting_transport(self):
-        calls = []
-
-        class FakeOpener:
-            def open(self, request, timeout):
-                calls.append((request, timeout))
-                raise remote.urllib.error.HTTPError(
-                    request.full_url,
-                    502,
-                    "bad gateway",
-                    hdrs=None,
-                    fp=io.BytesIO(b"upstream secret body"),
-                )
-
-        with mock.patch.object(remote.urllib.request, "build_opener", return_value=FakeOpener()):
-            with self.assertRaises(remote.RequestFailure) as raised:
-                remote._post_json("https://example.invalid/post", {"Accept": "application/json"}, {"project": "p"})
-
-        self.assertEqual(raised.exception.code, "http_error")
-        self.assertEqual(raised.exception.http_status, 502)
-        self.assertNotIn("upstream secret", str(raised.exception))
-        request, timeout = calls[0]
-        self.assertEqual(request.get_method(), "POST")
-        self.assertEqual(request.headers.get("Content-type"), "application/json")
-        self.assertEqual(timeout, 30)
 
 
 if __name__ == "__main__":

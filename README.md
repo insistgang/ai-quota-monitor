@@ -2,7 +2,7 @@
   简体中文 · <a href="./README_EN.md">English</a>
 </p>
 
-<!-- README_SYNC: source=working-tree; updated=2026-11-17 -->
+<!-- README_SYNC: source=working-tree; updated=2026-11-18 -->
 
 <div align="center">
 
@@ -18,7 +18,7 @@
 
 **如果它替你少开了三个客户端面板，点个 Star，让更多被额度折磨的人找到它。**
 
-<img src="./docs/assets/dashboard-overview.jpg" alt="额度概览整页：监控源统计、刷新提醒、9 张账号卡片与最近两日消耗" width="100%" />
+<img src="./docs/assets/dashboard-overview.jpg" alt="额度概览旧版截图：监控源统计、刷新提醒、额度卡片与最近两日消耗" width="100%" />
 
 </div>
 
@@ -28,7 +28,7 @@ AI 编程账号的额度散在各个客户端和网页里：有的只显示 5 �
 
 AI Quota Monitor 把这些数字收成一张表和三个网页：一条命令汇总多个账号的**周额度、5 小时短时窗口和重置时间**，同时产出终端表格、本地卡片式仪表盘和三个公开静态页。
 
-数据不在你的电脑上采集：额度经已有 SSH 连接在 Sub2API 服务器内只读查询，Antigravity 额外用 `agy /usage` 补全 Gemini / Claude 组的周窗口。全程只读，不发送模型任务、不触发额度重置。
+Codex、Kimi、MiniMax 经 SSH 在 Sub2API 服务器内查询。Antigravity 直接读取本机已登录的 `agy` CLI：按实际返回的模型组显示共享额度，不为单个模型虚构独立额度。两种采集方式都不发送模型任务、不触发额度重置。
 
 **📊 线上快照（每天 9:30–23:30 每小时更新）**：https://insistgang.top/ai-quota-monitor/
 
@@ -59,7 +59,7 @@ AI Quota Monitor 把这些数字收成一张表和三个网页：一条命令汇
 
 ### 额度概览
 
-![额度概览整页：监控源统计、刷新提醒、9 张账号卡片与最近两日消耗](docs/assets/dashboard-overview.jpg)
+![额度概览旧版截图：监控源统计、刷新提醒、额度卡片与最近两日消耗](docs/assets/dashboard-overview.jpg)
 
 卡片按周剩余从少到多排列，最需要处理的账号靠前。主百分比是供应商实际返回的周已用；5 小时窗单独显示，不混进周额度。周窗口未知时显示 `—`，不用 0% 假装已知。
 
@@ -88,6 +88,8 @@ open quota-dashboard.html           # open it in a browser
 
 要在真实环境采集，还需要先配置 Sub2API 私有映射（`~/.cache/ai-quota-monitor/sub2api.json`，权限 `0600`）。配置缺失时程序会直接报错并以退出码 2 结束，不会拿空数据凑一份快照。配置结构与服务器权限要求见 [Sub2API 额度接入](docs/sub2api-quota.md)。
 
+Antigravity 为可选来源。在同一个系统用户下安装并登录 `agy` 后即可采集，无需在 Sub2API 添加账号。`agy --print "/usage" --output-format json` 应返回结构化额度；已在 CLI 1.5.10 实测。程序从 `PATH` 或 `~/.local/bin/agy` 查找 CLI，找不到时只采集 Sub2API。
+
 常用命令：
 
 ```bash
@@ -107,7 +109,7 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 | `--port <端口>` | 配合 `--serve`，默认 `8788` |
 | `--retry-failures <次数>` | 对异常来源额外重试的次数 |
 | `--retry-delay <秒>` | 重试间隔，默认 `15` |
-| `--max-unhealthy <数量>` | 超过此数量的来源失败或走缓存时取消本次写入；负数表示不限制 |
+| `--max-unhealthy <数量>` | 异常来源超过该数量、且至少一个无缓存可用时取消写入；负数表示不限制 |
 
 ## 配置
 
@@ -118,8 +120,7 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 | `sub2api.json` | SSH 别名、账号 ID、平台与看板名称映射 | 命令行报错退出，不写入任何数据 |
 | `public-hidden-accounts.json` | 不公开的账号名单 | 停止生成公开页面 |
 | `finance.json` | 财务笔记路径与公开脱敏映射 | 公开页生成失败 |
-| `last-good.json` | 最近一次成功快照 | 采集失败时无可用缓存，直接阻断发布 |
-| `agy-groups.json` | Antigravity 模型分组缓存 | 重新查询分组 |
+| `last-good.json` | 每个来源最近一次有效快照 | 采集失败时无缓存可用，仍受异常数量门槛限制 |
 
 可用环境变量改路径或行为：
 
@@ -130,7 +131,6 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 | `QUOTA_FINANCE_CONFIG` | 财务私有配置路径 | `~/.cache/ai-quota-monitor/finance.json` |
 | `QUOTA_FINANCE_MD` | 财务笔记路径（Markdown） | 由 `finance.json` 中的 `finance_md` 指定 |
 | `QUOTA_LAST_GOOD` | 最近成功快照缓存路径 | `~/.cache/ai-quota-monitor/last-good.json` |
-| `QUOTA_AGY_GROUPS_CACHE` | Antigravity 分组缓存路径 | `~/.cache/ai-quota-monitor/agy-groups.json` |
 | `QUOTA_MONITOR_HOME` | 仓库根目录（launchd 入口用） | `~/Desktop/个人工具/ai-quota-monitor` |
 | `QUOTA_RUNTIME_BIN_DIR` | launchd 入口安装目录 | `~/.local/bin` |
 | `QUOTA_PYTHON_BIN` | 使用的 Python 解释器 | `python3` |
@@ -144,10 +144,10 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 | Kimi for Coding（双账号） | Sub2API CN 账号额度接口，读取 5h／周窗口 |
 | Codex（OpenAI 账号） | 在服务器内使用 Sub2API 当前凭据 GET 官方用量；按实际窗口时长区分 5h／7 天 |
 | MiniMax | Sub2API CN 账号额度接口；只显示上游本次实际返回的 5h／周窗口 |
-| Antigravity（Gemini 组） | Sub2API 分模型额度，辅以 `agy /usage` 补全 Gemini / Claude 组周额度 |
+| Antigravity（Gemini、Claude / GPT-OSS） | 本机 CLI 的分组共享额度，展示实际返回的周窗、5 小时窗及重置时间 |
 | 非 AI 服务（如 ikuuu） | 从私有财务记录读取到期日期并纳入订阅页与概览紧急提醒 |
 
-当前线上快照覆盖 9 个账号：Kimi ×2、Codex ×3、MiniMax ×1、Antigravity ×3。豆包 DOM 采集和旧本机 CLI 采集器已下线移除，历史底账中的旧记录在展示层过滤。
+当前快照覆盖 6 个 Sub2API 账号（Kimi ×2、Codex ×3、MiniMax ×1）及 2 个 Antigravity 共享池。旧 Antigravity 历史保留，不与新共享池混算；豆包等停用来源仍由展示层过滤。
 
 ## 定时自动跑（macOS launchd）
 
@@ -169,7 +169,7 @@ launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 
 ## 隐私与安全
 
-- 只在 Sub2API 服务器内查询只读额度接口，不更改套餐、重置策略或发送模型消息
+- Sub2API 查询在服务器内完成；Antigravity 只调用已登录 CLI 的额度命令，不读取或复制本机 OAuth 凭据
 - 不打印或缓存 key、token、管理员密码摘要；服务器内短期认证只存在于采集进程内存，SSH 只带回允许的额度字段
 - 本地静态看板、实时服务和公开网页均默认打码邮箱（如 `f***@163.com`），公开页额外应用 `finance.json` 的 `public_replacements` 剔除实名、银行与私有账号昵称；本地底账保留原始账号标识用于连续统计
 - `quota-log.csv`、`quota-dashboard.html` 含你的用量数据，已在 `.gitignore` 排除，不会误传
@@ -190,7 +190,7 @@ launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 | Bash | `publish.sh`、`scripts/*.sh` | 手动发布与 launchd 入口 |
 | SSH | 本机 → Sub2API 服务器 | 无交互登录，把受限查询脚本送过去执行 |
 | Sub2API | 额度来源 | 需服务器上 Python 3、Docker 与读取 `sub2api-db` 的权限 |
-| `tmux` + `agy` | Antigravity 周窗口补全 | `agy /usage` 为无消耗状态探针 |
+| `agy`（可选） | 本机 Antigravity 额度 | 原生 JSON 状态命令，无需终端自动化 |
 | macOS launchd | 定时发布 | 每天 9:30–23:30 每小时一次 |
 | GitHub Pages | 公开三页 | 从 `main` 分支的 `docs/` 目录构建 |
 
@@ -198,7 +198,8 @@ launchctl load ~/Library/LaunchAgents/com.leo.quota-report.plist
 
 ```text
 ai-quota-monitor/
-├── quota_report.py              # Sub2API 归一化、Antigravity 周窗口补全、每日计算、HTML 生成
+├── quota_report.py              # 汇总额度、每日计算、HTML 生成
+├── agy_quota.py                 # 本机 Antigravity 共享额度查询
 ├── sub2api_quota.py             # 私有映射、SSH 读取、窗口校验、账号级重试
 ├── publish_runtime.py           # 唯一的生成、提交、推送流程
 ├── publish.sh                   # 手动发布入口
@@ -215,7 +216,7 @@ ai-quota-monitor/
 │   └── assets/                  # README 用的真实页面截图
 ├── examples/
 │   └── com.leo.quota-report.plist  # launchd 计划任务模板
-├── tests/                       # 118 项回归测试
+├── tests/                       # 126 项回归测试
 ├── README.md / README_EN.md     # 中英文说明
 ├── ROADMAP.md                   # 进度与验证记录
 └── LICENSE
@@ -227,13 +228,13 @@ ai-quota-monitor/
 
 ```bash
 python3 -B -m unittest discover -s tests -q
-python3 -m py_compile quota_report.py sub2api_quota.py publish_runtime.py scripts/sub2api_quota_snapshot.py
+python3 -m py_compile quota_report.py agy_quota.py sub2api_quota.py publish_runtime.py scripts/sub2api_quota_snapshot.py
 bash -n publish.sh scripts/*.sh
 ```
 
-118 项测试分布在四个文件：`test_quota_report.py`（61 项，额度计算、脱敏、HTML 转义）、`test_sub2api_quota.py`（30 项，窗口归一化与重试）、`test_sub2api_remote.py`（17 项，远程读取）、`test_publish_runtime.py`（10 项，发布流程）。完整验收清单见 [项目流程与设计说明](docs/project-design.md)。
+126 项测试覆盖额度计算、CLI 解析、Sub2API 读取与重试、脱敏和发布流程。验收清单见 [项目流程与设计说明](docs/project-design.md)。
 
-> 本 README 的命令、参数和路径均对照当前代码核对，文档最后核对时间：2026-11-15。
+> 数据源说明最后核对时间：2026-11-18。
 
 ## License
 
