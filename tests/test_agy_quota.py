@@ -23,10 +23,12 @@ SHORT_RESET = NOW + dt.timedelta(hours=2)
 
 def groups():
     return [
-        {"name": "Gemini Models", "description": "Models within this group: Gemini 4 Argon, Gemini 4 Hydrogen",
+        {"name": "Gemini Models", "description": "Models within this group: Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen",
          "buckets": [bucket("5h", 0.775, SHORT_RESET), bucket("weekly", 0.96, WEEK_RESET)]},
         {"name": "Claude and GPT models", "description": "Models within this group: Claude Opus 4.6, GPT-OSS 120B",
          "buckets": [bucket("weekly", 1, WEEK_RESET), bucket("5h", 0, SHORT_RESET)]},
+        {"name": "Gemini 4 Argon", "description": "For paid Pro plans, Argon quota is separate.",
+         "buckets": [bucket("weekly", 0.9899, WEEK_RESET)]},
     ]
 
 
@@ -46,22 +48,38 @@ class AgQuotaTests(unittest.TestCase):
         self.which = which.start()
         self.addCleanup(which.stop)
 
-    def test_fixed_cli_command_reads_two_shared_pools_with_actual_windows(self):
+    def test_fixed_cli_command_reads_every_reported_group(self):
         with mock.patch.object(agy_quota.subprocess, "run", return_value=response(groups())) as run:
-            gemini, claude = agy_quota.collect(retry_attempts=2)
+            rows = agy_quota.collect(retry_attempts=2)
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], [BIN, "--print", "/usage", "--output-format", "json"])
         self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
         self.assertEqual(run.call_args.kwargs["cwd"], Path.home())
         self.assertEqual(run.call_args.kwargs["timeout"], 30)
-        self.assertEqual((gemini["name"], claude["name"]), (agy_quota.GEMINI_LABEL, agy_quota.CLAUDE_LABEL))
-        self.assertEqual((gemini["used_pct"], gemini["fiveh_pct"]), (4.0, 22.5))
-        self.assertEqual((claude["used_pct"], claude["fiveh_pct"]), (0.0, 100.0))
-        self.assertEqual(gemini["reset"], WEEK_RESET.astimezone().strftime("%m-%d %H:%M"))
-        self.assertEqual(gemini["fiveh_reset"], SHORT_RESET.astimezone().strftime("%m-%d %H:%M"))
-        self.assertIn("Gemini 4 Argon、Gemini 4 Hydrogen", gemini["note"])
-        self.assertIn("Claude Opus 4.6、GPT-OSS 120B", claude["note"])
-        self.assertNotIn("private-", json.dumps([gemini, claude]))
+        self.assertEqual([r["name"] for r in rows],
+                         [agy_quota.GEMINI_LABEL, agy_quota.CLAUDE_LABEL, agy_quota.ARGON_LABEL])
+        self.assertEqual((rows[0]["used_pct"], rows[0]["fiveh_pct"]), (4.0, 22.5))
+        self.assertEqual((rows[1]["used_pct"], rows[1]["fiveh_pct"]), (0.0, 100.0))
+        self.assertEqual(rows[2]["used_pct"], 1.0)
+        self.assertNotIn("fiveh_pct", rows[2])
+        self.assertEqual(rows[0]["reset"], WEEK_RESET.astimezone().strftime("%m-%d %H:%M"))
+        self.assertEqual(rows[0]["fiveh_reset"], SHORT_RESET.astimezone().strftime("%m-%d %H:%M"))
+        self.assertIn("Gemini 4 Carbon、Gemini 4 Argon、Gemini 4 Hydrogen", rows[0]["note"])
+        self.assertIn("Claude Opus 4.6、GPT-OSS 120B", rows[1]["note"])
+        self.assertNotIn("private-", json.dumps(rows))
+
+    def test_missing_optional_group_is_not_reported_as_failure(self):
+        with mock.patch.object(agy_quota.subprocess, "run", return_value=response(groups()[:2])):
+            rows = agy_quota.collect()
+        self.assertEqual([r["name"] for r in rows], [agy_quota.GEMINI_LABEL, agy_quota.CLAUDE_LABEL])
+        self.assertTrue(all(r["status"] == "ok" for r in rows))
+
+    def test_unknown_group_is_hidden_instead_of_leaking_internal_names(self):
+        extra = {"name": "Internal Experiment Bucket", "buckets": [bucket("weekly", 0.5, WEEK_RESET)]}
+        with mock.patch.object(agy_quota.subprocess, "run", return_value=response(groups() + [extra])):
+            rows = agy_quota.collect()
+        self.assertEqual(len(rows), 3)
+        self.assertNotIn("Internal", json.dumps(rows))
 
     def test_unsupported_or_agent_generated_reply_never_retried_or_stored(self):
         for overrides in ({"num_turns": 1}, {"usage": {"total_tokens": 10}}, {"command": {"name": "status"}}):
@@ -70,8 +88,10 @@ class AgQuotaTests(unittest.TestCase):
                 result = subprocess.CompletedProcess([], 0, stdout=stdout)
                 with mock.patch.object(agy_quota.subprocess, "run", return_value=result) as run:
                     rows = agy_quota.collect(retry_attempts=2)
-                run.assert_called_once()
-                self.assertTrue(all(r["status"] != "ok" and "used_pct" not in r for r in rows))
+                self.assertEqual(run.call_count, 3)
+                self.assertEqual(len(rows), 1)
+                self.assertNotEqual(rows[0]["status"], "ok")
+                self.assertNotIn("used_pct", rows[0])
                 self.assertNotIn("private-", json.dumps(rows))
 
     def test_expired_short_window_keeps_valid_weekly_window(self):
@@ -99,20 +119,28 @@ class AgQuotaTests(unittest.TestCase):
         group["buckets"].append(bucket("weekly", 0.0, WEEK_RESET))
         self.assertIsNone(agy_quota._group_row(group, agy_quota.GEMINI_LABEL, NOW))
 
-    def test_retry_does_not_overwrite_the_first_good_group(self):
-        gemini, claude = groups()
-        new_gemini = {**gemini, "buckets": [bucket("weekly", 0.11, WEEK_RESET)]}
-        with mock.patch.object(agy_quota.subprocess, "run", side_effect=[response([gemini]), response([new_gemini, claude])]) as run:
+    def test_retry_recovers_after_a_failed_first_call(self):
+        failure = subprocess.CompletedProcess([], 1, stdout="")
+        with mock.patch.object(agy_quota.subprocess, "run",
+                               side_effect=[failure, response(groups())]) as run:
             rows = agy_quota.collect(retry_attempts=2)
         self.assertEqual(run.call_count, 2)
-        self.assertEqual([row["used_pct"] for row in rows], [4.0, 0.0])
+        self.assertEqual([row["used_pct"] for row in rows], [4.0, 0.0, 1.0])
+
+    def test_duplicate_group_name_keeps_the_first_reading(self):
+        gemini, claude, argon = groups()
+        again = {**gemini, "buckets": [bucket("weekly", 0.11, WEEK_RESET)]}
+        with mock.patch.object(agy_quota.subprocess, "run", return_value=response([gemini, claude, argon, again])):
+            rows = agy_quota.collect()
+        self.assertEqual([row["used_pct"] for row in rows], [4.0, 0.0, 1.0])
 
     def test_cli_timeout_has_no_upstream_details_or_numeric_quotas(self):
         error = subprocess.TimeoutExpired([BIN], 30, output="private-stdout")
         with mock.patch.object(agy_quota.subprocess, "run", side_effect=error) as run:
             rows = agy_quota.collect(retry_attempts=1)
         self.assertEqual(run.call_count, 2)
-        self.assertTrue(all(r["status"] != "ok" and "used_pct" not in r for r in rows))
+        self.assertNotEqual(rows[0]["status"], "ok")
+        self.assertNotIn("used_pct", rows[0])
         self.assertNotIn("private-", json.dumps(rows))
 
     def test_no_cli_keeps_sub2api_only_usage_optional(self):

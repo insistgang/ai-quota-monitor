@@ -45,11 +45,11 @@ flowchart LR
 | Kimi for Coding | Sub2API CN 额度接口 | 否 | 配置服务器账号映射；明确区分 5h 与周窗口 |
 | Codex（OpenAI 多账号） | 在服务器读取 Sub2API 当前凭据，GET 官方用量 | 否 | 不调用会触发模型探针或自动重置的管理路径 |
 | MiniMax | Sub2API CN 额度接口 | 否 | 只取本次返回的窗口，缺少周窗口时不补 0% |
-| Antigravity | 本机 `agy --print "/usage" --output-format json` | 否 | 同一个本机登录用户；按 CLI 返回的共享池显示，不拆出逐模型额度 |
+| Antigravity | 本机 `agy --print "/usage" --output-format json` | 否 | 同一个本机登录用户；按 CLI 返回的模型组显示 |
 
 具体权限、私有配置与只读查询边界见 [Sub2API 额度接入](sub2api-quota.md)。
 
-Antigravity 不再经过 Sub2API，也不驱动终端界面。采集器只接受 [CLI 原生额度命令](https://antigravity.google/docs/cli/commands/usage/)的零回合、零 token 结构化结果，按实际窗口把剩余占比换算为已用百分比。Gemini 与 Claude / GPT-OSS 两个共享组单独记账，不把旧 Sub2API 分模型快照与新口径相减。未返回或已过期的窗口不猜测，也不标为无限额。
+Antigravity 不再经过 Sub2API，也不驱动终端界面。采集器只接受 [CLI 原生额度命令](https://antigravity.google/docs/cli/commands/usage/)的零回合、零 token 结构化结果，按实际窗口把剩余占比换算为已用百分比。CLI 报告的每个模型组单独成卡：Gemini 与 Claude / GPT-OSS 共享池有周窗和 5 小时窗，Gemini 4 Argon 是独立的周额度，不并入 Gemini 组。旧 Sub2API 分模型快照不与新口径相减。未返回或已过期的窗口不猜测，也不标为无限额。
 
 豆包 DOM 等停用来源的历史记录仍由展示层过滤。
 
@@ -113,7 +113,7 @@ ChatGPT 预存余额与非 AI 服务（如 `ikuuu`）到期信息从私有财务
 | 单个数据源不可用 | 保留其他成功账号；公开发布仍受既有异常数量门槛限制 |
 | Sub2API 配置损坏 | 命令行停止写入；实时看板保留上次快照并标为缓存 |
 | Sub2API 账号读取失败 | 只重试该账号；仍失败且存在最近快照缓存时降级保留缓存，不写成 0% 样本 |
-| Antigravity CLI 不可用 | 未安装时跳过。查询失败时标为异常，有本机共享池的成功快照时标为缓存；不读取旧 Sub2API 分模型数据 |
+| Antigravity CLI 不可用 | 未安装时跳过。查询失败时标为异常，有本机额度组的成功快照时标为缓存；不读取旧 Sub2API 分模型数据 |
 | 页面动态文本含 HTML | 输出前转义，避免注入公开页面 |
 | GitHub 推送失败 | 保留本地提交，等待后续计划任务再次推送 |
 
@@ -134,7 +134,7 @@ bash -n publish.sh scripts/*.sh
 ## 10. 主要文件
 
 - [`quota_report.py`](../quota_report.py)：汇总额度、每日计算和 HTML 生成。
-- [`agy_quota.py`](../agy_quota.py)：读取本机 Antigravity 共享额度，校验 5 小时窗与周窗。
+- [`agy_quota.py`](../agy_quota.py)：读取本机 Antigravity 各模型组额度，校验 5 小时窗与周窗。
 - [`sub2api_quota.py`](../sub2api_quota.py)：私有映射、SSH 读取、窗口校验和账号级重试。
 - [`scripts/sub2api_quota_snapshot.py`](../scripts/sub2api_quota_snapshot.py)：服务器内受限用量查询，不返回凭据。
 - [`publish_runtime.py`](../publish_runtime.py)：唯一的生成、提交和推送流程。

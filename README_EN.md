@@ -144,10 +144,10 @@ If the finance note itself is missing or unreadable, the public pages still rend
 | Kimi for Coding (two accounts) | Sub2API CN quota endpoints, reading the 5h and weekly windows |
 | Codex (OpenAI accounts) | Official usage endpoint using the current Sub2API credentials inside the server; 5h and 7-day windows are separated by their real duration |
 | MiniMax | Sub2API CN quota endpoints; only the windows the upstream actually returned for this call |
-| Antigravity (Gemini, Claude / GPT-OSS) | Shared pools from the local CLI, using the weekly and 5-hour windows and reset times it actually reports |
+| Antigravity (Gemini, Claude / GPT-OSS, Gemini 4 Argon) | Model groups from the local CLI, using the weekly and 5-hour windows and reset times it actually reports |
 | Non-AI services (such as `ikuuu`) | Expiry dates read from the private finance notes, surfaced on the subscriptions page and in urgent reminders |
 
-The current snapshot covers six Sub2API accounts (Kimi ×2, Codex ×3, MiniMax ×1) and two Antigravity pools. Older Antigravity history stays separate from the new pools. Retired sources such as Doubao are still filtered out at display time.
+The current snapshot covers six Sub2API accounts (Kimi ×2, Codex ×3, MiniMax ×1) and three Antigravity groups: shared weekly and 5-hour windows for Gemini and Claude / GPT-OSS, plus a separate weekly limit for Gemini 4 Argon. Older Antigravity history stays separate from the new readings. Retired sources such as Doubao are still filtered out at display time.
 
 ## Scheduling on macOS (launchd)
 
@@ -216,7 +216,7 @@ ai-quota-monitor/
 │   └── assets/                  # real screenshots used by this README
 ├── examples/
 │   └── com.leo.quota-report.plist  # launchd schedule template
-├── tests/                       # 126 regression tests
+├── tests/                       # 129 regression tests
 ├── README.md / README_EN.md     # Chinese and English documentation
 ├── ROADMAP.md                   # progress and verification log
 └── LICENSE
@@ -232,7 +232,7 @@ python3 -m py_compile quota_report.py agy_quota.py sub2api_quota.py publish_runt
 bash -n publish.sh scripts/*.sh
 ```
 
-The 126 tests cover quota calculations, CLI decoding, Sub2API reads and retries, masking and publishing. The acceptance checklist lives in [project design notes](docs/project-design.md) (Chinese).
+The 129 tests cover quota calculations, CLI decoding, Sub2API reads and retries, masking and publishing. The acceptance checklist lives in [project design notes](docs/project-design.md) (Chinese).
 
 > Data source documentation last reviewed: 2026-11-18.
 

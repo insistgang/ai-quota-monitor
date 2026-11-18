@@ -144,10 +144,10 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 | Kimi for Coding（双账号） | Sub2API CN 账号额度接口，读取 5h／周窗口 |
 | Codex（OpenAI 账号） | 在服务器内使用 Sub2API 当前凭据 GET 官方用量；按实际窗口时长区分 5h／7 天 |
 | MiniMax | Sub2API CN 账号额度接口；只显示上游本次实际返回的 5h／周窗口 |
-| Antigravity（Gemini、Claude / GPT-OSS） | 本机 CLI 的分组共享额度，展示实际返回的周窗、5 小时窗及重置时间 |
+| Antigravity（Gemini、Claude / GPT-OSS、Gemini 4 Argon） | 本机 CLI 的分组额度，展示实际返回的周窗、5 小时窗及重置时间 |
 | 非 AI 服务（如 ikuuu） | 从私有财务记录读取到期日期并纳入订阅页与概览紧急提醒 |
 
-当前快照覆盖 6 个 Sub2API 账号（Kimi ×2、Codex ×3、MiniMax ×1）及 2 个 Antigravity 共享池。旧 Antigravity 历史保留，不与新共享池混算；豆包等停用来源仍由展示层过滤。
+当前快照覆盖 6 个 Sub2API 账号（Kimi ×2、Codex ×3、MiniMax ×1）及 3 个 Antigravity 额度组：Gemini 与 Claude / GPT-OSS 共享池各有周窗和 5 小时窗，Gemini 4 Argon 为单独的周额度。旧 Antigravity 历史保留，不与新口径混算；豆包等停用来源仍由展示层过滤。
 
 ## 定时自动跑（macOS launchd）
 
@@ -216,7 +216,7 @@ ai-quota-monitor/
 │   └── assets/                  # README 用的真实页面截图
 ├── examples/
 │   └── com.leo.quota-report.plist  # launchd 计划任务模板
-├── tests/                       # 126 项回归测试
+├── tests/                       # 129 项回归测试
 ├── README.md / README_EN.md     # 中英文说明
 ├── ROADMAP.md                   # 进度与验证记录
 └── LICENSE
@@ -232,7 +232,7 @@ python3 -m py_compile quota_report.py agy_quota.py sub2api_quota.py publish_runt
 bash -n publish.sh scripts/*.sh
 ```
 
-126 项测试覆盖额度计算、CLI 解析、Sub2API 读取与重试、脱敏和发布流程。验收清单见 [项目流程与设计说明](docs/project-design.md)。
+129 项测试覆盖额度计算、CLI 解析、Sub2API 读取与重试、脱敏和发布流程。验收清单见 [项目流程与设计说明](docs/project-design.md)。
 
 > 数据源说明最后核对时间：2026-11-18。
 

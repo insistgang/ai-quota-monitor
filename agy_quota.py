@@ -12,9 +12,22 @@ from pathlib import Path
 
 SOURCE = "antigravity_cli"
 GEMINI_LABEL = "Gemini · 共享额度"
+ARGON_LABEL = "Gemini · 4 Argon"
 CLAUDE_LABEL = "Claude / GPT-OSS · 共享额度"
-_GROUP_LABELS = {"gemini models": GEMINI_LABEL, "claude and gpt models": CLAUDE_LABEL}
+UNKNOWN_LABEL = "Antigravity · CLI"
 _MODEL_NAME = re.compile(r"(?:Gemini |Claude |GPT-OSS |Orchestrator )[A-Za-z0-9.() -]{1,55}")
+
+
+def _display_label(group_name: str) -> str | None:
+    """Map a CLI model group onto a stable dashboard label; unknown groups stay hidden."""
+    low = group_name.casefold()
+    if "argon" in low:
+        return ARGON_LABEL
+    if "gemini" in low:
+        return GEMINI_LABEL
+    if "claude" in low or "gpt" in low:
+        return CLAUDE_LABEL
+    return None
 
 
 def _usage_groups(payload: object) -> list:
@@ -86,12 +99,12 @@ def _group_row(group: dict, name: str, captured: dt.datetime) -> dict | None:
 
 
 def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
-    """Collect only observed windows; absence of agy leaves Sub2API-only setups intact."""
+    """Collect the groups the CLI actually reports; absence of agy keeps Sub2API-only setups intact."""
     home = Path.home()
     agy = shutil.which("agy") or shutil.which(str(home / ".local/bin/agy"))
     if not agy:
         return []
-    rows = {}
+    rows: dict[str, dict] = {}
     for attempt in range(max(0, retry_attempts) + 1):
         if attempt and retry_delay > 0:
             time.sleep(retry_delay)
@@ -106,20 +119,24 @@ def collect(*, retry_attempts: int = 0, retry_delay: float = 0) -> list[dict]:
         except (OSError, UnicodeError):
             break
         if result.returncode != 0:
-            break
+            continue
         try:
             groups = _usage_groups(json.loads(result.stdout))
         except ValueError:
-            break  # Unsupported or unexpected output; no prompt fallback.
+            continue  # Unsupported or unexpected output; never fall back to a prompt.
         captured = dt.datetime.now(dt.timezone.utc)
-        for group_name, label in _GROUP_LABELS.items():
-            if label in rows:
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("name"), str):
                 continue
-            matches = [g for g in groups if isinstance(g, dict)
-                       and isinstance(g.get("name"), str) and g["name"].casefold() == group_name]
-            if len(matches) == 1 and (row := _group_row(matches[0], label, captured)) is not None:
+            label = _display_label(group["name"])
+            if label is None or label in rows:
+                continue
+            row = _group_row(group, label, captured)
+            if row is not None:
                 rows[label] = row
-        if len(rows) == len(_GROUP_LABELS):
+        if rows:
             break
-    return [rows.get(label, {"name": label, "source": SOURCE, "status": "Antigravity CLI 未返回有效额度"})
-            for label in _GROUP_LABELS.values()]
+    if not rows:
+        return [{"name": UNKNOWN_LABEL, "source": SOURCE,
+                 "status": "Antigravity CLI 未返回有效额度"}]
+    return list(rows.values())
