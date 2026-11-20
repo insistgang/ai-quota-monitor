@@ -136,6 +136,12 @@ def _quota_hidden(name: str | None) -> bool:
     return "grok" in lowered or ("antigravity" in lowered and "claude" in lowered and "gemini" not in lowered) or ("豆包" in lowered and "codex" not in lowered)
 
 
+def _subscription_hidden(name: str | None) -> bool:
+    """订阅页只过滤已下线的来源；仍在有效期内的订阅（如豆包）要显示到期提醒。"""
+    lowered = (name or "").strip().lower()
+    return "grok" in lowered or ("antigravity" in lowered and "claude" in lowered and "gemini" not in lowered)
+
+
 def _public_hidden_codex_names() -> set[str]:
     """从本机私有配置读取不公开的 Codex 账号，公开仓库不保存完整标识。"""
     try:
@@ -1029,7 +1035,7 @@ def _subs_html(
     def pub(s: str) -> str:
         return _apply_replacements(s, active_replacements) if public else s
 
-    visible_subs = [r for r in fin["subs"] if not _quota_hidden(r["name"])]
+    visible_subs = [r for r in fin["subs"] if not _subscription_hidden(r["name"])]
     kpi_strip = _subs_kpi_strip_html(fin, visible_subs, prepaid_accounts, pub)
     sub_cards = "".join(_sub_card_html(r, pub) for r in visible_subs)
     prepaid_html = _prepaid_cards_html(prepaid_accounts, pub)

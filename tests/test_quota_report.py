@@ -913,13 +913,13 @@ class QuotaVisibilityTests(unittest.TestCase):
             {"Codex · 1first@qq.com", "Codex · 1second@qq.com", "MiniMax"},
         )
 
-    def test_doubao_is_hidden_from_dashboards_and_subscriptions(self):
+    def test_doubao_is_hidden_from_quota_cards_but_kept_in_subscriptions(self):
         names = ["豆包 · 体验套餐", "Kimi", "Codex · doubao@example.com",
                  "MiniMax", "Antigravity · Gemini 组"]
         rows = [{"name": name, "status": "ok", "used_pct": 10,
                  "used_text": "10%", "reset": "?"} for name in names]
         finance = {
-            "subs": [{"name": "豆包会员", "cost": "费用待核对", "renewal": "2026-12-15 到期"},
+            "subs": [{"name": "豆包会员", "cost": "费用待核对", "renewal": "2026-12-15 到期（不续）"},
                      {"name": "MiniMax", "cost": "490 元/年", "renewal": "2027-03-22 到期"}],
             "ledger": [], "non_ai": [], "total_ai": "", "total_all": "",
         }
@@ -932,8 +932,23 @@ class QuotaVisibilityTests(unittest.TestCase):
                     self.assertIn(name, page)
                 self.assertIn("Codex · d***@example.com", page)
                 self.assertIn("490 元/年", page)
+                # 仍在有效期内的订阅要出现在订阅页，并标明不续费
+                self.assertIn("豆包会员", page)
+                self.assertIn("2026-12-15 到期（不续）", page)
         self.assertFalse(quota_report._quota_hidden("Codex · doubao@example.com"))
         self.assertTrue(quota_report._quota_hidden("豆包 · 体验套餐"))
+        self.assertFalse(quota_report._subscription_hidden("豆包会员"))
+        self.assertTrue(quota_report._subscription_hidden("Grok · 体验套餐"))
+
+    def test_subscription_page_still_hides_retired_sources(self):
+        finance = {
+            "subs": [{"name": "Grok · 体验套餐", "cost": "0 元", "renewal": "2026-01-01 到期"}],
+            "ledger": [], "non_ai": [], "total_ai": "", "total_all": "",
+        }
+        with mock.patch.object(quota_report, "_load_finance", return_value=finance), \
+             mock.patch.object(quota_report, "_daily_deltas", return_value=[]):
+            page = quota_report.render_html([], public=False, page="subscriptions")
+        self.assertNotIn("Grok · 体验套餐", page)
 
 
 class CollectSourceTests(unittest.TestCase):

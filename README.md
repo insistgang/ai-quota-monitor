@@ -147,7 +147,7 @@ python3 quota_report.py --serve    # local server mode: http://127.0.0.1:8788 wi
 | Antigravity（Gemini、Claude / GPT-OSS、Gemini 4 Argon） | 本机 CLI 的分组额度，展示实际返回的周窗、5 小时窗及重置时间 |
 | 非 AI 服务（如 ikuuu） | 从私有财务记录读取到期日期并纳入订阅页与概览紧急提醒 |
 
-当前快照覆盖 6 个 Sub2API 账号（Kimi ×2、Codex ×3、MiniMax ×1）及 3 个 Antigravity 额度组：Gemini 与 Claude / GPT-OSS 共享池各有周窗和 5 小时窗，Gemini 4 Argon 为单独的周额度。旧 Antigravity 历史保留，不与新口径混算；豆包等停用来源仍由展示层过滤。
+当前快照覆盖 6 个 Sub2API 账号（Kimi ×2、Codex ×3、MiniMax ×1）及 3 个 Antigravity 额度组：Gemini 与 Claude / GPT-OSS 共享池各有周窗和 5 小时窗，Gemini 4 Argon 为单独的周额度。旧 Antigravity 历史保留，不与新口径混算；豆包已不再接入额度采集，其会员在订阅页显示到期提醒，但不进入额度卡片与每日消耗。
 
 ## 定时自动跑（macOS launchd）
 

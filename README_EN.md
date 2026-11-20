@@ -147,7 +147,7 @@ If the finance note itself is missing or unreadable, the public pages still rend
 | Antigravity (Gemini, Claude / GPT-OSS, Gemini 4 Argon) | Model groups from the local CLI, using the weekly and 5-hour windows and reset times it actually reports |
 | Non-AI services (such as `ikuuu`) | Expiry dates read from the private finance notes, surfaced on the subscriptions page and in urgent reminders |
 
-The current snapshot covers six Sub2API accounts (Kimi ×2, Codex ×3, MiniMax ×1) and three Antigravity groups: shared weekly and 5-hour windows for Gemini and Claude / GPT-OSS, plus a separate weekly limit for Gemini 4 Argon. Older Antigravity history stays separate from the new readings. Retired sources such as Doubao are still filtered out at display time.
+The current snapshot covers six Sub2API accounts (Kimi ×2, Codex ×3, MiniMax ×1) and three Antigravity groups: shared weekly and 5-hour windows for Gemini and Claude / GPT-OSS, plus a separate weekly limit for Gemini 4 Argon. Older Antigravity history stays separate from the new readings. Doubao is no longer collected for quota, but its membership still shows its expiry on the subscriptions page — it does not appear on the quota board or in daily spend.
 
 ## Scheduling on macOS (launchd)
 
