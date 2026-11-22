@@ -9,6 +9,10 @@
 
 ## 最近完成
 
+- 2026-11-22 15:25 先只查（`scripts/quota-check.sh`，不写底账、不推送）后手动执行 `scripts/quota-check.sh --publish` 完成一次采集与公开发布：9 个来源（Sub2API 6 个账号 + Antigravity CLI 3 个额度组）全部新鲜（数据时间 15:25），无失败来源、无旧快照兜底；生成 15:25 快照，推送提交 `05b38b5`，GitHub Pages 构建状态 `built`，线上三页与本地发布产物 SHA-256 逐一一致。仍有两处源端缺项：Gemini · 4 Argon 无 5h 窗口数据（Antigravity CLI 对该组不提供 5h 桶）、Codex · phwdrvocd09162@hotmail.com 无 5h 行（上游未提供），均非采集失败。本次未改动采集代码。
+
+- 2026-11-22 13:26 手动执行 `scripts/quota-check.sh --publish` 完成一次采集与公开发布：9 个来源（Sub2API 6 个账号 + Antigravity CLI 3 个额度组）全部新鲜（数据时间 13:24），无失败来源、无旧快照兜底；生成 13:24 快照，推送提交 `0fc5c4d`，GitHub Pages 构建状态 `built`，线上三页与本地发布产物哈希一致。本次未改动采集代码。
+
 - 2026-11-22 02:44 提交并推送 `ROADMAP.md` 后再次手动发布：生成 02:43 快照，推送提交 `85c253b`，9 个来源全部新鲜；GitHub Pages 构建状态 `built`，线上三页与本地发布产物逐字一致。
 
 - 2026-11-22 02:12 手动执行 `scripts/quota-check.sh --publish` 完成一次采集与公开发布：9 个来源（Sub2API 6 个账号 + Antigravity CLI 3 个额度组）全部新鲜，无失败来源、无旧快照兜底；生成 02:10 快照，推送提交 `c0a29fd`，GitHub Pages 构建状态 `built`，线上三页与本地发布产物逐字一致。本次未改动采集代码。
@@ -50,6 +54,8 @@
 
 
 ## 最近验证
+
+- 2026-11-22 15:25 只查与 `--publish` 两轮采集均未出现来源失败或「沿用上次快照」提示，9 个来源数据时间同为 11-22 15:25；底账增至 11598 行（本次快照新增 9 行）。`gh api` 确认最新 Pages 构建 commit 为 `05b38b5`、状态 `built`（15:25:44 building → 15:26:19 built）；`curl` 抓取 https://insistgang.top/ai-quota-monitor/ 三页与 `docs/index.html`、`docs/history.html`、`docs/subscriptions.html` 的 SHA-256 逐一一致，线上概览快照时间为 2026-11-22 15:25。提交前工作区仅剩本 ROADMAP 一处待提交改动，已随本次提交一并写入。
 
 - 2026-11-22 02:44 `85c253b` 推送后轮询 Pages 最新构建约 1 分钟转为 `built`；`curl` 抓取 https://insistgang.top/ai-quota-monitor/ 三页与 `docs/` 对应产物逐字一致，线上概览快照时间为 2026-11-22 02:43，底账增至 11508 行，工作区干净、无未推送提交。
 
