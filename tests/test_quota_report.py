@@ -1224,5 +1224,67 @@ class CodeBuddySubscriptionTests(unittest.TestCase):
         self.assertIn("1036 元/月", html)
 
 
+class GoogleAnnualSubscriptionTests(unittest.TestCase):
+    """Google 年付是一次付清的额度覆盖，必须解析出到期日且不重复计费。"""
+
+    def test_annual_plan_expiry_is_parsed_and_rendered(self):
+        finance_text = """## 一、当前在用订阅
+| 产品 | 档位/形式 | 费用 | 计费周期 | 刷新/到期时间 | 状态与证据 |
+|------|----------|------|----------|--------------|-----------|
+| **Google 年付（姐夫账号）· Antigravity / Gemini 额度** | **Google 年付订阅** | **610.00 元**（本人开通并支付） | **年付，一次付清** | **2027-11-26 到期**（一次付清，期间不再扣费） | 本人确认未来一年额度够用 |
+
+## 二、历史充值与一次性消费
+| 日期 | 项目 | 金额 | 备注 |
+|------|------|------|------|
+| 2026-11-26 | **Google 年付订阅（姐夫账号）· Antigravity 额度** | **610.00 元** | 一次付清，未来一年不再付费 |
+
+## 四、月度支出估算
+- AI 固定订阅合计（本人实付）：约 1047 元/月
+- 固定订阅总额约 **1097 元/月**
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(finance_text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path):
+                finance = quota_report._load_finance()
+                html = quota_report._subs_html(public=True)
+
+        google = next(s for s in finance["subs"] if "Google 年付" in s["name"])
+        self.assertIn("610.00 元", google["cost"])
+        self.assertIn("2027-11-26 到期", google["renewal"])
+        self.assertIn("一次付清", google["renewal"])
+        self.assertEqual(finance["ledger"][0]["amount"], "610.00 元")
+        self.assertEqual(finance["total_ai"], "1047 元/月")
+        self.assertIn("2027-11-26 到期", html)
+        self.assertIn("610.00 元", html)
+
+    def test_annual_plan_is_not_counted_as_a_monthly_recurring_charge(self):
+        """年付只登记一笔实付，订阅页不得把它展开成月度扣费。"""
+        finance_text = """## 一、当前在用订阅
+| 产品 | 档位/形式 | 费用 | 计费周期 | 刷新/到期时间 | 状态与证据 |
+|------|----------|------|----------|--------------|-----------|
+| **Google 年付（姐夫账号）· Antigravity / Gemini 额度** | **Google 年付订阅** | **610.00 元** | **年付，一次付清** | **2027-11-26 到期**（一次付清，期间不再扣费） | 本人确认 |
+
+## 二、历史充值与一次性消费
+| 日期 | 项目 | 金额 | 备注 |
+|------|------|------|------|
+| 2026-11-26 | Google 年付订阅 | **610.00 元** | 一次付清 |
+
+## 四、月度支出估算
+- AI 固定订阅合计（本人实付）：约 1047 元/月
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            finance_path = Path(tmp) / "finance.md"
+            finance_path.write_text(finance_text, encoding="utf-8")
+            with mock.patch.object(quota_report, "FINANCE_MD", finance_path):
+                finance = quota_report._load_finance()
+                html = quota_report._subs_html(public=True)
+
+        self.assertEqual(1, len(finance["subs"]))
+        self.assertEqual(1, len(finance["ledger"]))
+        self.assertNotIn("每月", finance["subs"][0]["renewal"])
+        self.assertNotIn("下次扣费", html)
+
+
 if __name__ == "__main__":
     unittest.main()
